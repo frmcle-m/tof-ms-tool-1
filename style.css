@@ -1,0 +1,428 @@
+:root {
+  --bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --border: #dcdfe4;
+  --text: #23262b;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --danger: #b91c1c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+header {
+  padding: 24px 32px;
+  background: linear-gradient(120deg, #1d4ed8, #2563eb);
+  color: white;
+}
+header h1 { margin: 0 0 6px; font-size: 1.4rem; }
+header .sub { margin: 0; font-size: 0.85rem; opacity: 0.9; }
+header code { background: rgba(255,255,255,0.2); padding: 1px 6px; border-radius: 4px; }
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 8px;
+}
+
+.hint { color: var(--muted); font-size: 0.85rem; }
+.empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  background: #fafbfc;
+}
+.dropzone.dragover { border-color: var(--accent); background: #eef4ff; }
+.dropzone input[type="file"] { display: none; }
+
+.btn {
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin: 4px 6px;
+}
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-dark); }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.btn-ghost:hover { background: #f0f1f3; }
+
+.summary { margin-top: 12px; font-size: 0.9rem; }
+.summary .warn { color: var(--danger); }
+.summary .ok { color: #15803d; }
+.summary .hint-inline { color: var(--muted); font-size: 0.8rem; }
+
+.section-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 8px;
+}
+.section-header-row h2 { margin: 0; border-bottom: none; padding-bottom: 0; }
+.graph-size-control {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.graph-size-control label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.78rem;
+  color: var(--muted);
+  gap: 2px;
+}
+.graph-size-control input[type="number"] {
+  width: 90px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.85rem;
+}
+.btn-settings {
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  align-self: center;
+  white-space: nowrap;
+}
+
+/* 「4. グラフを描画する」欄の「⚙ 表示設定」パネル。グラフサイズの隣にある
+   歯車ボタンで表示/非表示を切り替える、色・線の太さ・凡例配置の設定欄。 */
+.graph-settings-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 28px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfc;
+  padding: 14px 16px;
+  margin: 4px 0 12px;
+}
+.graph-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  max-width: 280px;
+}
+.graph-settings-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.graph-settings-row label.chk {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.graph-settings-row input[type="number"],
+.graph-settings-row select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.85rem;
+}
+.graph-settings-row input[type="color"] {
+  width: 60px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+}
+.graph-settings-row input[type="color"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.graph-settings-row .field-hint {
+  grid-column: unset;
+  margin: 0;
+  font-size: 0.74rem;
+}
+
+.date-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.date-tab-btn {
+  border: 1px solid var(--border);
+  background: #eef1f5;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.date-tab-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent-dark);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  margin-top: 8px;
+}
+.data-table th, .data-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.data-table th { background: #f0f2f5; }
+.data-table.hidden { display: none; }
+
+.hidden { display: none !important; }
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab-btn {
+  border: none;
+  background: #eef1f5;
+  padding: 8px 16px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.tab-btn.active {
+  background: var(--accent);
+  color: white;
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.controls-grid label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.82rem;
+  color: var(--muted);
+  gap: 4px;
+}
+.controls-grid label input[type="checkbox"] {
+  display: inline;
+}
+.controls-grid label.chk {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 横軸/縦軸の範囲設定をまとめて視認しやすくする区画。
+   自動チェックボックスと最小・最大の入力欄が1つの枠にまとまり、
+   値を入力してもラベル文字（最小/最大）が消えないようにしている。 */
+.range-group {
+  grid-column: span 2;
+  align-self: start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfc;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.range-group-title {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.range-inputs {
+  display: flex;
+  gap: 10px;
+}
+.range-inputs label {
+  flex: 1;
+  color: var(--muted);
+}
+.controls-grid input[type="number"],
+.controls-grid input[type="text"],
+.controls-grid select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.88rem;
+}
+
+/* 設定項目が多いタブで、関連する設定をグループ分けして見やすくするための
+   区切り見出し。controls-grid の中に置き、grid-column:1/-1 で全幅に広げる。 */
+.control-divider {
+  grid-column: 1 / -1;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--accent-dark);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-top: 6px;
+}
+.control-divider:first-child { margin-top: 0; }
+
+/* 専門用語が多い項目に、常時表示される短い説明を添える。
+   ホバーで消えるtitle属性だけに頼らず、常に見える形で補足する。 */
+.field-hint {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  margin-top: -6px;
+  margin-bottom: 2px;
+}
+
+.check-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px 12px;
+  margin: 8px 0 16px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafbfc;
+}
+.check-list label {
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plot-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+}
+.plot-area .plot {
+  flex: 1 1 100%;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.plot-area-4 .plot {
+  flex: 1 1 45%;
+  min-height: 280px;
+}
+.cond-box {
+  flex: 0 0 260px;
+  background: #fffbe6;
+  border: 1px solid #f0e0a0;
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+.result-box {
+  background: #eef4ff;
+  border: 1px solid #b6cdfb;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+
+/* 「5. コードを編集する」欄。app.jsの内容をテキストエリアで表示・編集し、
+   下のiframeに編集後のコードでツール全体を再読み込みしてプレビューする。 */
+.code-editor-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.code-editor-toolbar .hint-inline {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-left: 6px;
+}
+.code-editor-toolbar .hint-inline.warn { color: var(--danger); }
+.code-editor {
+  width: 100%;
+  height: 360px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  tab-size: 2;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  white-space: pre;
+}
+.code-preview-wrap {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.code-preview-header {
+  background: #f0f2f5;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.code-preview-frame {
+  width: 100%;
+  height: 900px;
+  border: none;
+  display: block;
+  background: #fff;
+}
+
+footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 16px;
+}

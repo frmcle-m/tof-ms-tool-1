@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TOF-MS データ解析ツール</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>飛行時間型質量分析計(TOF-MS) データ解析ツール</h1>
+  <p class="sub">csvファイル（測定データ）と887ファイル（測定条件）のペアを読み込んで解析します。実装コード（<code>app.js</code>）は「5. コードを編集する」から確認・編集できます。</p>
+</header>
+
+<main>
+
+  <!-- ============================================================ -->
+  <!-- 1. ファイルを入れる -->
+  <!-- ============================================================ -->
+  <section class="card" id="section-load">
+    <h2>1. ファイルを入れる</h2>
+    <p class="hint">同じ名前で拡張子が <code>.csv</code> と <code>.887</code> の2ファイルを1組として認識します。複数組をまとめて選択できます。読み込んだ測定データ・ラベル・設定はこのブラウザ内に自動保存され、次回このページを開いたときも復元されます（外部には送信されません。削除したい場合は「すべてクリア」を押してください）。</p>
+    <div id="dropzone" class="dropzone">
+      <p>ここにファイルをドラッグ&ドロップ、またはボタンで選択してください</p>
+      <input type="file" id="fileInput" multiple accept=".csv,.887">
+      <button id="btnPickFiles" type="button" class="btn btn-primary">ファイルを選択</button>
+      <button id="btnClearFiles" type="button" class="btn btn-ghost">すべてクリア</button>
+    </div>
+    <div id="fileSummary" class="summary"></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 日付を選択（読み込んだファイルをファイル名先頭の日付ごとに分けて操作する） -->
+  <!-- ============================================================ -->
+  <section class="card hidden" id="section-date">
+    <h2>日付を選択</h2>
+    <p class="hint">ファイル名の先頭の日付（例: 20260625）ごとにファイルをグループ化しています。タブを切り替えると、以下の一覧・ラベル付け・グラフはその日付のファイルだけを対象にします（他の日付のファイルも読み込んだまま保持されます）。</p>
+    <div id="dateTabs" class="date-tabs"></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 2. 各ファイルの名前を見る -->
+  <!-- ============================================================ -->
+  <section class="card" id="section-list">
+    <h2>2. 各ファイルの名前を見る</h2>
+    <div id="fileListEmpty" class="empty">まだファイルが読み込まれていません。</div>
+    <table id="fileTable" class="data-table hidden">
+      <thead>
+        <tr>
+          <th>ファイル名</th>
+          <th>.csv</th>
+          <th>.887</th>
+          <th>測定時間</th>
+          <th>SWEEPS</th>
+        </tr>
+      </thead>
+      <tbody id="fileTableBody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 3. 各ファイルにラベルをつける -->
+  <!-- ============================================================ -->
+  <section class="card" id="section-label">
+    <h2>3. 各ファイルにラベルをつける</h2>
+    <p class="hint">ラベルは数値または文字列です。数値として認識された場合、複数ファイルのグラフで横軸として使えます。バックグラウンド(BG)として使うファイルも指定してください。</p>
+    <div id="labelListEmpty" class="empty">まだファイルが読み込まれていません。</div>
+    <table id="labelTable" class="data-table hidden">
+      <thead>
+        <tr>
+          <th>ファイル名</th>
+          <th>ラベル</th>
+          <th>種別</th>
+          <th>calfact</th>
+          <th>プロットに使用</th>
+          <th>BGとして使用</th>
+        </tr>
+      </thead>
+      <tbody id="labelTableBody"></tbody>
+    </table>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 4. グラフを描画する -->
+  <!-- ============================================================ -->
+  <section class="card" id="section-graph">
+    <div class="section-header-row">
+      <h2>4. グラフを描画する</h2>
+      <div class="graph-size-control">
+        <label>幅 (px)<input type="number" id="graphWidth" value="900" min="300" step="50"></label>
+        <label>高さ (px)<input type="number" id="graphHeight" value="450" min="200" step="50"></label>
+        <button class="btn btn-ghost btn-settings" id="btnGraphSettings" type="button" title="グラフの色・線の太さ・凡例の位置を設定します">⚙ 表示設定</button>
+      </div>
+    </div>
+    <div id="graphSettingsPanel" class="graph-settings-panel hidden">
+      <div class="graph-settings-row">
+        <label class="chk"><input type="checkbox" id="graphLineColorEnable"> データ線の色を指定する</label>
+        <input type="color" id="graphLineColor" value="#4682b4" disabled>
+        <span class="field-hint">オフの場合は各グラフの既定色（青・クリムゾンなど）のまま表示します。オンにすると、1本の線だけのグラフ（TOFスペクトル・質量スペクトル・差分など）にこの色を使います。</span>
+      </div>
+      <div class="graph-settings-row">
+        <label>カラーパレット（複数の線があるグラフ用）
+          <select id="graphColorPalette">
+            <option value="default">既定（これまでの配色）</option>
+            <option value="category10">Category10</option>
+            <option value="set1">Set1</option>
+            <option value="set2">Set2</option>
+            <option value="pastel">Pastel</option>
+            <option value="blues">モノトーン（青系）</option>
+          </select>
+        </label>
+        <span class="field-hint">差分（Signal/BG）や複数ファイル重ね書きなど、1つのグラフに複数の線がある場合の配色です。「既定」以外を選ぶとその配色で塗り分けます。</span>
+      </div>
+      <div class="graph-settings-row">
+        <label>線の太さ (px)
+          <input type="number" id="graphLineWidth" value="1" min="0.5" max="10" step="0.5">
+        </label>
+      </div>
+      <div class="graph-settings-row">
+        <label class="chk"><input type="checkbox" id="graphLegendInset"> 凡例をグラフ内に表示する（inset）</label>
+        <span class="field-hint">オフの場合は現在と同じくグラフの外側（右）に凡例を表示します。</span>
+      </div>
+    </div>
+    <p class="hint">ここで設定した幅・高さで各グラフを描画・PNG保存します。ファイル名が幅より長くなる場合は自動で改行されます。「⚙ 表示設定」から色・線の太さ・凡例の位置も変更できます。</p>
+
+    <div class="tabs" id="graphTabs">
+      <button class="tab-btn active" data-tab="tab-raw">TOFスペクトル</button>
+      <button class="tab-btn" data-tab="tab-mass">質量校正・質量スペクトル</button>
+      <button class="tab-btn" data-tab="tab-diff">差分 (Signal − BG)</button>
+      <button class="tab-btn" data-tab="tab-multi">複数ファイル重ね書き</button>
+      <button class="tab-btn" data-tab="tab-integration">積算・比プロット</button>
+    </div>
+
+    <!-- ---- タブ1: TOFスペクトル ---- -->
+    <div class="tab-content active" id="tab-raw">
+      <div class="controls-grid">
+        <div class="control-divider">ファイル選択</div>
+        <label>ファイル
+          <select id="rawFileSelect"></select>
+        </label>
+
+        <div class="control-divider">表示オプション</div>
+        <label class="chk" title="測定条件(.887ファイルの内容)をグラフの横に表示します"><input type="checkbox" id="rawShowCond" checked> 測定条件を表示</label>
+        <label class="chk" title="グラフに目盛り線を表示します"><input type="checkbox" id="rawShowGrid" checked> グリッドを表示</label>
+        <label class="chk" title="縦軸(Counts)を対数スケールで表示します"><input type="checkbox" id="rawLogY"> 縦軸を対数スケール</label>
+
+        <div class="control-divider">軸の範囲</div>
+        <div class="range-group">
+          <div class="range-group-title">横軸の範囲 (ns)</div>
+          <label class="chk"><input type="checkbox" id="rawXAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="rawXMin" disabled></label>
+            <label>最大<input type="number" id="rawXMax" disabled></label>
+          </div>
+        </div>
+        <div class="range-group">
+          <div class="range-group-title">縦軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="rawYAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="rawYMin" disabled></label>
+            <label>最大<input type="number" id="rawYMax" disabled></label>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btnPlotRaw">グラフを表示</button>
+      <div class="plot-area">
+        <div id="plotRaw" class="plot"></div>
+        <pre id="rawCondText" class="cond-box"></pre>
+      </div>
+    </div>
+
+    <!-- ---- タブ2: 質量校正・質量スペクトル ---- -->
+    <div class="tab-content" id="tab-mass">
+      <div class="controls-grid">
+        <div class="control-divider">ファイル選択</div>
+        <label>ファイル
+          <select id="massFileSelect"></select>
+        </label>
+
+        <div class="control-divider">ピーク検出・質量校正の設定</div>
+        <label title="この値以上のカウント数を持つ点だけをピーク候補として検出します">検出閾値 (counts)
+          <input type="number" id="massThreshold" value="10">
+        </label>
+        <span class="field-hint">この値以上のカウント数を持つ点だけをピーク候補として検出します。</span>
+        <label title="近すぎる位置にある2つのピークを1つにまとめる際の最小間隔（チャンネル数）">最小ピーク間隔 (ch)
+          <input type="number" id="massDistance" value="10">
+        </label>
+        <span class="field-hint">検出したピーク同士がこの間隔より近い場合、まとめて1つのピークとして扱います。</span>
+        <label title="隣り合う校正ピーク間の質量差。例：Heクラスターのステップは4.0026u">質量ステップ (u)
+          <input type="number" id="massStep" value="4.0026" step="0.0001">
+        </label>
+        <span class="field-hint">校正に使う隣接ピーク同士の質量差（u）です。ピークの間隔がこの値の整数倍になっていると仮定して校正します。</span>
+        <label title="質量スペクトルを描く前に信号を滑らかにする移動平均の点数">スムージング窓幅
+          <input type="number" id="massSmoothWin" value="30">
+        </label>
+        <span class="field-hint">移動平均に使うデータ点数。大きいほどグラフが滑らかになりますが、ピークもなまります。</span>
+        <div class="range-group">
+          <div class="range-group-title" title="この時間範囲内のピークだけを質量校正に使用します">校正ピーク検出範囲 (ns)</div>
+          <label class="chk"><input type="checkbox" id="massRangeAuto" checked> 自動（全範囲）</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="massRangeMin" disabled></label>
+            <label>最大<input type="number" id="massRangeMax" disabled></label>
+          </div>
+        </div>
+
+        <div class="control-divider">ヤコビアン補正</div>
+        <label class="chk" title="時間軸を質量軸に変換すると間隔が不均一になるため、その歪みを補正します"><input type="checkbox" id="massJacobian" checked> ヤコビアン補正を適用</label>
+        <span class="field-hint">時間→質量の変換で生じる間隔の不均一さを補正し、ピークの強度を正しく比較できるようにします。通常はチェックしたままで構いません。</span>
+
+        <div class="control-divider">質量スペクトルの表示設定</div>
+        <div class="range-group">
+          <div class="range-group-title">横軸の範囲 (u)</div>
+          <label class="chk"><input type="checkbox" id="massXAuto"> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="massXMin" value="0"></label>
+            <label>最大<input type="number" id="massXMax" value="200"></label>
+          </div>
+        </div>
+        <div class="range-group">
+          <div class="range-group-title">縦軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="massYAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="massYMin" disabled></label>
+            <label>最大<input type="number" id="massYMax" disabled></label>
+          </div>
+        </div>
+        <label class="chk" title="縦軸(強度)を対数スケールで表示します"><input type="checkbox" id="massLogY"> 縦軸を対数スケール</label>
+        <label class="chk" title="質量ステップの整数倍ごとに縦の補助線を表示します"><input type="checkbox" id="massHeLines" checked> 質量系列補助線を表示</label>
+        <label class="chk" title="質量校正に使ったピークの位置に印を表示します"><input type="checkbox" id="massCalLines" checked> 校正点を表示</label>
+      </div>
+      <button class="btn btn-primary" id="btnPlotMass">質量スペクトルを表示</button>
+      <div id="massResult" class="result-box hidden"></div>
+      <div class="plot-area">
+        <div id="plotMassTof" class="plot"></div>
+        <div id="plotMassSpec" class="plot"></div>
+      </div>
+    </div>
+
+    <!-- ---- タブ3: 差分 (Signal - BG) ---- -->
+    <div class="tab-content" id="tab-diff">
+      <div class="controls-grid">
+        <div class="control-divider">ファイル選択</div>
+        <label>Signal ファイル
+          <select id="diffSignalSelect"></select>
+        </label>
+        <label title="Signalから差し引くバックグラウンド（未反応時など）のファイル">Background ファイル
+          <select id="diffBgSelect"></select>
+        </label>
+
+        <div class="control-divider">質量校正</div>
+        <label title="グラフの横軸に時間(ns)を使うか、校正後の質量(u)を使うかを選びます">横軸
+          <select id="diffXAxis">
+            <option value="time">時間 (ns)</option>
+            <option value="mass">質量 (u)</option>
+          </select>
+        </label>
+        <label title="時間→質量の変換式 mass = ((time - b) / a)^2 で使うパラメータ">校正パラメータ (a)
+          <input type="text" id="diffCalibA" placeholder="質量タブから自動反映されます">
+        </label>
+        <label title="時間→質量の変換式 mass = ((time - b) / a)^2 で使うパラメータ">校正パラメータ (b)
+          <input type="text" id="diffCalibB" placeholder="質量タブから自動反映されます">
+        </label>
+        <span class="field-hint">「2. 質量校正・質量スペクトル」タブでピーク校正を行うと自動で入力されます。横軸を質量にする場合のみ使用します。</span>
+
+        <div class="control-divider">表示オプション</div>
+        <label title="移動平均に使うデータ点数。大きいほど滑らかになります">スムージング窓幅
+          <input type="number" id="diffSmoothWin" value="10">
+        </label>
+        <label class="chk" title="測定条件(.887ファイルの内容)をグラフの横に表示します"><input type="checkbox" id="diffShowCond" checked> 測定条件を表示</label>
+        <label class="chk" title="縦軸(Signal − BG)を対数スケールで表示します"><input type="checkbox" id="diffLogY"> 縦軸を対数スケール</label>
+
+        <div class="control-divider">軸の範囲</div>
+        <div class="range-group">
+          <div class="range-group-title">横軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="diffXAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="diffXMin" disabled></label>
+            <label>最大<input type="number" id="diffXMax" disabled></label>
+          </div>
+        </div>
+        <div class="range-group">
+          <div class="range-group-title">縦軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="diffYAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="diffYMin" disabled></label>
+            <label>最大<input type="number" id="diffYMax" disabled></label>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btnPlotDiff">差分グラフを表示</button>
+      <div class="plot-area">
+        <div id="plotDiffRaw" class="plot"></div>
+        <div id="plotDiffDiff" class="plot"></div>
+        <pre id="diffCondText" class="cond-box"></pre>
+      </div>
+    </div>
+
+    <!-- ---- タブ4: 複数ファイル重ね書き ---- -->
+    <div class="tab-content" id="tab-multi">
+      <div class="controls-grid">
+        <div class="control-divider">ファイル選択</div>
+        <label title="全ファイルから差し引くバックグラウンドのファイル">Background ファイル
+          <select id="multiBgSelect"></select>
+        </label>
+
+        <div class="control-divider">質量校正</div>
+        <label title="グラフの横軸に時間(ns)を使うか、校正後の質量(u)を使うかを選びます">横軸
+          <select id="multiXAxis">
+            <option value="time">時間 (ns)</option>
+            <option value="mass">質量 (u)</option>
+          </select>
+        </label>
+        <label title="時間→質量の変換式 mass = ((time - b) / a)^2 で使うパラメータ">校正パラメータ (a)
+          <input type="text" id="multiCalibA" placeholder="質量タブから自動反映されます">
+        </label>
+        <label title="時間→質量の変換式 mass = ((time - b) / a)^2 で使うパラメータ">校正パラメータ (b)
+          <input type="text" id="multiCalibB" placeholder="質量タブから自動反映されます">
+        </label>
+        <span class="field-hint">「2. 質量校正・質量スペクトル」タブでピーク校正を行うと自動で入力されます。横軸を質量にする場合のみ使用します。</span>
+
+        <div class="control-divider">表示オプション</div>
+        <label title="移動平均に使うデータ点数。大きいほど滑らかになります">スムージング窓幅
+          <input type="number" id="multiSmoothWin" value="1">
+        </label>
+        <label class="chk" title="グラフに目盛り線を表示します"><input type="checkbox" id="multiGrid" checked> グリッドを表示</label>
+        <label class="chk" title="縦軸を対数スケールで表示します"><input type="checkbox" id="multiLogY"> 縦軸を対数スケール</label>
+
+        <div class="control-divider">軸の範囲</div>
+        <div class="range-group">
+          <div class="range-group-title">横軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="multiXAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="multiXMin" disabled></label>
+            <label>最大<input type="number" id="multiXMax" disabled></label>
+          </div>
+        </div>
+        <div class="range-group">
+          <div class="range-group-title">縦軸の範囲</div>
+          <label class="chk"><input type="checkbox" id="multiYAuto" checked> 自動</label>
+          <div class="range-inputs">
+            <label>最小<input type="number" id="multiYMin" disabled></label>
+            <label>最大<input type="number" id="multiYMax" disabled></label>
+          </div>
+        </div>
+      </div>
+      <p class="hint">重ね書きする信号ファイルを選択してください（ラベルの昇順に並び替えて表示します。数値ラベルのファイルのみ選択可）。</p>
+      <div id="multiFileChecks" class="check-list"></div>
+      <button class="btn btn-primary" id="btnPlotMulti">同時プロットを表示</button>
+      <div class="plot-area">
+        <div id="plotMultiRaw" class="plot"></div>
+        <div id="plotMultiDiff" class="plot"></div>
+      </div>
+    </div>
+
+    <!-- ---- タブ5: 積算・比プロット ---- -->
+    <div class="tab-content" id="tab-integration">
+      <div class="controls-grid">
+        <div class="control-divider">ファイル選択</div>
+        <label title="全ファイルから差し引くバックグラウンドのファイル">Background ファイル
+          <select id="intBgSelect"></select>
+        </label>
+
+        <div class="control-divider">積算範囲の設定</div>
+        <label title="TOFスペクトルのうち、積算（合計カウント数を計算）する時間範囲1の開始点">範囲1 開始 (ns)
+          <input type="number" id="int1Start" value="0">
+        </label>
+        <label title="積算範囲1の終了点">範囲1 終了 (ns)
+          <input type="number" id="int1End" value="0">
+        </label>
+        <label title="比較・比を取るための2つ目の積算範囲の開始点（例: 別のピークやベースライン）">範囲2 開始 (ns)
+          <input type="number" id="int2Start" value="0">
+        </label>
+        <label title="積算範囲2の終了点">範囲2 終了 (ns)
+          <input type="number" id="int2End" value="0">
+        </label>
+        <span class="field-hint">範囲1・範囲2それぞれの時間区間内のカウントを合計し、結果表に「範囲1」「範囲2」「範囲1/範囲2の比」として表示します。</span>
+
+        <div class="control-divider">表示オプション</div>
+        <label title="移動平均に使うデータ点数。大きいほど滑らかになります">スムージング窓幅
+          <input type="number" id="intSmoothWin" value="1">
+        </label>
+        <label title="積算結果グラフの横軸に付ける名前（各ファイルのラベル値が横軸になります）">横軸ラベル
+          <input type="text" id="intXLabel" value="Label">
+        </label>
+        <label class="chk" title="グラフに目盛り線を表示します"><input type="checkbox" id="intGrid" checked> グリッドを表示</label>
+        <label class="chk" title="同じラベル値を持つ複数ファイルがある場合、標準偏差などのばらつきを誤差棒として表示します"><input type="checkbox" id="intErrbar" checked> 誤差棒を表示</label>
+        <label class="chk" title="データ点同士を線で結んで表示します。チェックを外すと点のみ表示されます"><input type="checkbox" id="intLine" checked> データ点を線で結ぶ</label>
+        <label class="chk" title="縦軸(積算値・比)を対数スケールで表示します"><input type="checkbox" id="intLogY"> 縦軸 対数スケール</label>
+        <label class="chk" title="横軸(ラベル値)を対数スケールで表示します"><input type="checkbox" id="intLogX"> 横軸 対数スケール</label>
+      </div>
+      <p class="hint">積算対象の信号ファイルを選択してください（数値ラベルのファイルのみ選択可。横軸はラベルの値を使います）。</p>
+      <div id="intFileChecks" class="check-list"></div>
+      <button class="btn btn-primary" id="btnPlotIntegration">積算プロットを表示</button>
+      <div class="plot-area plot-area-4">
+        <div id="plotInt1" class="plot"></div>
+        <div id="plotInt2" class="plot"></div>
+        <div id="plotInt3" class="plot"></div>
+        <div id="plotInt4" class="plot"></div>
+      </div>
+      <table id="intResultTable" class="data-table hidden">
+        <thead>
+          <tr>
+            <th>ファイル</th><th>ラベル</th><th>範囲1</th><th>範囲2</th><th>比 (範囲1/範囲2)</th>
+          </tr>
+        </thead>
+        <tbody id="intResultTableBody"></tbody>
+      </table>
+    </div>
+
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- 5. コードを編集する -->
+  <!-- ============================================================ -->
+  <section class="card" id="section-code">
+    <h2>5. コードを編集する（app.js）</h2>
+    <p class="hint">
+      下のエディタに <code>app.js</code> の内容を読み込んで表示します。自由に書き換えて「変更を反映して再実行」を押すと、
+      その場でこのプレビュー欄に編集後のコードでツール全体を再読み込みして表示します（このページ自体はもとのコードのまま動作し続けます）。
+      プレビューへの反映は一時的なもので、ページを閉じたり再読み込みすると消えます。編集内容をファイルとして残したい場合は
+      「編集内容をapp.jsとしてダウンロード」で保存し、手元の <code>app.js</code> を置き換えてください。
+      なお、このページを <code>file://</code>（ダブルクリックで直接開いた状態）で開いている場合、コードの読み込みに失敗することがあります。
+      その場合はローカルサーバー経由で開くか、公開ページをご利用ください。
+    </p>
+    <div class="code-editor-toolbar">
+      <button class="btn btn-primary" id="btnRunCode" type="button">変更を反映して再実行</button>
+      <button class="btn btn-ghost" id="btnResetCode" type="button">元のコードに戻す</button>
+      <button class="btn btn-ghost" id="btnDownloadCode" type="button">編集内容をapp.jsとしてダウンロード</button>
+      <span id="codeStatus" class="hint-inline"></span>
+    </div>
+    <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off"></textarea>
+    <div class="code-preview-wrap">
+      <div class="code-preview-header">プレビュー（「変更を反映して再実行」を押すとここに編集後のコードで表示されます）</div>
+      <iframe id="codePreviewFrame" class="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-modals"></iframe>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <p>TOF-MS Data Analysis Tool — ブラウザ内で完結して動作します（データはどこにも送信されません。このブラウザのIndexedDBに自動保存されます）。</p>
+</footer>
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
