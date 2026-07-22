@@ -484,10 +484,9 @@ if (typeof document !== 'undefined') {
   }
 
   /* ---------- 2b. ゴミ箱 ----------
-     「2. 各ファイルの一覧・ラベル」でチェックしたファイルを、読み込んだファイルの一覧から
-     取り除き、ゴミ箱（IndexedDBの trash ストア）に移す。ゴミ箱の中身の閲覧・復元・完全削除は
-     別ページ（trash.html）で行う。 */
-  const trashSelection = new Set(); // チェックボックスで選択中のstem（ページ内だけの一時的な状態）
+     「2. 各ファイルの一覧・ラベル」の各行のゴミ箱アイコンを押すと、そのファイルを読み込んだ
+     ファイルの一覧から取り除き、ゴミ箱（IndexedDBの trash ストア）に移す。ゴミ箱の中身の
+     閲覧・復元・完全削除は別ページ（trash.html）で行う。 */
 
   async function refreshSidebarTrashCount() {
     const trashRecords = await dbGetAll(STORE_TRASH);
@@ -507,7 +506,6 @@ if (typeof document !== 'undefined') {
       await dbPut(STORE_TRASH, record);
       await dbDeleteKey(STORE_FILES, stem);
       delete state.files[stem];
-      trashSelection.delete(stem);
 
       if (state.bgStem === stem) state.bgStem = null;
       delete state.checklistSelection.multiFileChecks[stem];
@@ -690,15 +688,13 @@ if (typeof document !== 'undefined') {
       const tr = document.createElement('tr');
 
       const tdTrash = document.createElement('td');
-      const trashCb = document.createElement('input');
-      trashCb.type = 'checkbox';
-      trashCb.checked = trashSelection.has(stem);
-      trashCb.addEventListener('change', () => {
-        if (trashCb.checked) trashSelection.add(stem); else trashSelection.delete(stem);
-        const selectAllCb = document.getElementById('trashSelectAll');
-        if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
-      });
-      tdTrash.appendChild(trashCb);
+      const trashBtn = document.createElement('button');
+      trashBtn.type = 'button';
+      trashBtn.className = 'trash-row-btn';
+      trashBtn.textContent = '🗑';
+      trashBtn.title = 'このファイルをゴミ箱へ移動';
+      trashBtn.addEventListener('click', () => moveStemsToTrash([stem]));
+      tdTrash.appendChild(trashBtn);
 
       const tdName = document.createElement('td');
       tdName.textContent = stem;
@@ -785,8 +781,6 @@ if (typeof document !== 'undefined') {
       tr.appendChild(tdBg); tr.appendChild(tdIndividualBg);
       tbody.appendChild(tr);
     }
-    const selectAllCb = document.getElementById('trashSelectAll');
-    if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
     const useAllCb = document.getElementById('useInPlotSelectAll');
     if (useAllCb) useAllCb.checked = allStems.length > 0 && allStems.every(s => state.files[s].useInPlot !== false);
   }
@@ -1114,7 +1108,6 @@ if (typeof document !== 'undefined') {
     state.selectedDates = new Set();
     state.bgStem = null;
     state.checklistSelection = { multiFileChecks: {}, intFileChecks: {} };
-    trashSelection.clear();
     dbClear(); // ブラウザに保存していたデータ（ゴミ箱を含む）も合わせて削除する
     document.getElementById('diffCalibA').value = '';
     document.getElementById('diffCalibB').value = '';
@@ -1133,20 +1126,13 @@ if (typeof document !== 'undefined') {
     refreshSidebarTrashCount();
   });
 
-  document.getElementById('btnMoveToTrash').addEventListener('click', () => {
-    moveStemsToTrash([...trashSelection]);
-  });
-  document.getElementById('trashSelectAll').addEventListener('change', (e) => {
-    const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) td:first-child input[type="checkbox"]');
-    rowCbs.forEach(cb => {
-      cb.checked = e.target.checked;
-      cb.dispatchEvent(new Event('change'));
-    });
-  });
   document.getElementById('useInPlotSelectAll').addEventListener('change', (e) => {
+    // ループ中に各行のchangeハンドラがこのヘッダーのcheckedを書き換えてしまうため、
+    // 先に「全チェック/全解除」の値を確定させてから各行に反映する（先頭行だけ反映される不具合の対策）。
+    const checkAll = e.target.checked;
     const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) .use-in-plot-cb');
     rowCbs.forEach(cb => {
-      cb.checked = e.target.checked;
+      cb.checked = checkAll;
       cb.dispatchEvent(new Event('change'));
     });
   });

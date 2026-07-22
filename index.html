@@ -71,14 +71,11 @@
         <label class="chk bg-mode-toggle"><input type="checkbox" id="bgPerFileMode"> ファイルごとに個別のBGファイルを指定する</label>
         <p class="hint field-hint-standalone">オフの場合（既定）はこれまで通り、共通BGファイル1つを全ての生データファイルに使用します。オンにすると各ファイルの行に「個別BG」の選択欄が表示され、指定した行はそのファイルを、指定していない行は引き続き共通BGを使用します（差分・重ね書き・積算のすべてのグラフに反映されます）。</p>
         <div class="empty" id="filesListEmpty">左側の日付一覧から表示したい日付を選んでください（まだファイルが読み込まれていない場合は「1. ファイルを入れる」から読み込んでください）。</div>
-        <div class="trash-action-bar">
-          <button class="btn btn-ghost" id="btnMoveToTrash" type="button">🗑 選択したファイルをゴミ箱へ移動</button>
-          <span class="hint-inline">ファイル名の左のチェックボックスで対象を選びます。ゴミ箱に移した後は、左側indexの「🗑 ゴミ箱」から中身の確認・復元・完全削除ができます。</span>
-        </div>
+        <p class="hint field-hint-standalone">各行の左端にあるゴミ箱アイコン（🗑）を押すと、そのファイルをゴミ箱へ移動できます。ゴミ箱に移した後は、左側indexの「🗑 ゴミ箱」から中身の確認・復元・完全削除ができます。</p>
         <table class="data-table hidden" id="filesTable">
           <thead>
             <tr>
-              <th class="col-trash-select"><input type="checkbox" id="trashSelectAll" title="表示中の全ファイルを選択/解除"></th>
+              <th class="col-trash-select" title="各行のゴミ箱アイコンで、その行のファイルをゴミ箱へ移動できます"></th>
               <th>ファイル名</th>
               <th>.887</th>
               <th>.csv</th>
