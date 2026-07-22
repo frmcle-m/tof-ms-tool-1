@@ -1,18 +1,8 @@
 /* ============================================================
    TOF-MS データ解析ツール — 実装コード
-   (このファイルの中身は index.html の画面には表示されません)
+   (このファイルの中身は index.html の画面には表示されません。
+    「コードを編集する」ページ（editor.html）から確認・編集できます)
    ============================================================ */
-
-/* ============================================================
-   0. グローバル状態
-   ============================================================ */
-const state = {
-  files: {},          // stem -> { name, csvFile, condFile, csvData, condData, label, labelType, labelValue, dateKey, useInPlot }
-  bgStem: null,       // ラベル表で「BGとして使用」に指定されたファイル
-  lastCalib: { a: null, b: null }, // 質量校正タブで計算された a, b
-  currentDate: null,  // 現在選択中の日付タブ（ファイル名先頭の日付キー）
-  checklistSelection: { multiFileChecks: {}, intFileChecks: {} }, // stem -> true/false（チェック状態をstem単位で記憶し、日付切替やDOM再描画で消えないようにする）
-};
 
 /* ============================================================
    1. 純粋な計算・パース関数（DOMに依存しない）
@@ -251,10 +241,19 @@ const KEY_LABELS = {
   caloff: 'Cal. offset',
   syncout: 'Sync out (Hz)',
 };
+// calfact は整数値のため、小数点以下は切り捨てて表示する
+function formatCalfact(v) {
+  if (v === undefined || v === null || v === '') return v;
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return v;
+  return String(Math.trunc(n));
+}
 function makeConditionText(cond) {
   const lines = [];
   for (const key in KEY_LABELS) {
-    if (key in cond) lines.push(`${KEY_LABELS[key]}: ${cond[key]}`);
+    if (!(key in cond)) continue;
+    const value = key === 'calfact' ? formatCalfact(cond[key]) : cond[key];
+    lines.push(`${KEY_LABELS[key]}: ${value}`);
   }
   return lines.join('\n');
 }
@@ -264,7 +263,34 @@ function makeConditionText(cond) {
    ============================================================ */
 if (typeof document !== 'undefined') {
 
-  /* ---------- 2. ファイル読込ヘルパー ---------- */
+  /* ============================================================
+     0. グローバル状態
+     files: stem -> { name, csvFile, condFile, csvData, condData, label, labelType,
+                       labelValue, dateKey, useInPlot, bgOverrideStem }
+     knownDates:    これまでに一度でも読み込んだことのある日付キーの集合（サイドバーの日付一覧＝履歴）
+     selectedDates: サイドバーの日付一覧で選ばれ、「2. 各ファイルの一覧・ラベル」に表示されている日付キーの集合（複数可）
+     bgStem:        「共通BGとして使用」で指定された、共通のバックグラウンドファイル（ツール全体で1つ）
+     checklistSelection: 複数ファイル重ね書き・積算タブのチェックリストの選択状態（stem -> true/false）
+     fields:        表示設定・軸範囲・質量校正の入力値など（id -> 値）を記憶する
+     ※「3. グラフを描画する」は日付を問わず全ファイルが対象のため、これらの設定はすべてツール全体で1つだけ持つ。
+     ============================================================ */
+  const state = {
+    files: {},
+    knownDates: new Set(),
+    selectedDates: new Set(),
+    bgStem: null,
+    checklistSelection: { multiFileChecks: {}, intFileChecks: {} },
+    fields: {},
+  };
+
+  function registerDateKey(key) {
+    if (!state.knownDates.has(key)) {
+      state.knownDates.add(key);
+      state.selectedDates.add(key); // 新しく出現した日付は自動的に一覧表示の対象にする
+    }
+  }
+
+  /* ---------- 1. ファイル読込ヘルパー ---------- */
 
   function extOf(name) {
     const m = name.match(/\.([^.]+)$/);
@@ -291,14 +317,15 @@ if (typeof document !== 'undefined') {
     return entry.csvData;
   }
 
-  /* ---------- 2b. ローカル永続化 (IndexedDB) ----------
-     読み込んだファイル（測定データ含む）とラベル・設定をブラウザのIndexedDBに保存し、
-     次回このHTMLを開いたときに自動で復元する。データは常にこのブラウザ内にだけ保存され、
-     外部サーバーには一切送信されない。 */
+  /* ---------- 2. ローカル永続化 (IndexedDB) ----------
+     読み込んだファイル（測定データ含む）と、表示設定・ラベル・BG設定をブラウザの
+     IndexedDBに保存し、次回このHTMLを開いたときに自動で復元する。データは常にこの
+     ブラウザ内にだけ保存され、外部サーバーには一切送信されない。 */
   const DB_NAME = 'tof_tool_db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 4; // v4: ゴミ箱（trashストア）に対応
   const STORE_FILES = 'files';
   const STORE_META = 'meta';
+  const STORE_TRASH = 'trash'; // ゴミ箱ページ（trash.html）からも同じ名前でアクセスする
 
   function openDB() {
     return new Promise((resolve) => {
@@ -314,6 +341,7 @@ if (typeof document !== 'undefined') {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_FILES)) db.createObjectStore(STORE_FILES, { keyPath: 'stem' });
         if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: 'key' });
+        if (!db.objectStoreNames.contains(STORE_TRASH)) db.createObjectStore(STORE_TRASH, { keyPath: 'stem' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -347,40 +375,68 @@ if (typeof document !== 'undefined') {
     });
   }
 
-  async function dbClear() {
+  async function dbDeleteKey(storeName, key) {
     const db = await dbPromise;
     if (!db) return;
     return new Promise((resolve) => {
-      const tx = db.transaction([STORE_FILES, STORE_META], 'readwrite');
-      tx.objectStore(STORE_FILES).clear();
-      tx.objectStore(STORE_META).clear();
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });
   }
 
-  // 1ファイル分（測定データ・条件・ラベル等）をIndexedDBに保存する
-  function persistFileEntry(stem) {
+  async function dbClear() {
+    const db = await dbPromise;
+    if (!db) return;
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE_FILES, STORE_META, STORE_TRASH], 'readwrite');
+      tx.objectStore(STORE_FILES).clear();
+      tx.objectStore(STORE_META).clear();
+      tx.objectStore(STORE_TRASH).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  }
+
+  // ファイルの状態を、IndexedDBに保存できる形（プレーンオブジェクト）に変換する
+  function fileEntryToRecord(stem) {
     const e = state.files[stem];
-    if (!e) return;
-    dbPut(STORE_FILES, {
+    if (!e) return null;
+    return {
       stem,
       csvData: e.csvData ? { time_ns: Array.from(e.csvData.time_ns), counts: Array.from(e.csvData.counts) } : null,
       condData: e.condData || {},
       label: e.label, labelType: e.labelType, labelValue: e.labelValue,
       useInPlot: e.useInPlot, dateKey: e.dateKey,
       hasCsv: !!e.csvFile, hasCond: !!e.condFile,
-    });
+      bgOverrideStem: e.bgOverrideStem || null,
+    };
   }
 
-  // BG指定・現在の日付タブなど、ファイル単位ではない設定をIndexedDBに保存する
-  function persistMeta() {
+  // 1ファイル分（測定データ・条件・ラベル・個別BG指定等）をIndexedDBに保存する
+  function persistFileEntry(stem) {
+    const record = fileEntryToRecord(stem);
+    if (!record) return;
+    dbPut(STORE_FILES, record);
+  }
+
+  // ファイル単位ではない設定（表示設定・BG・日付一覧の選択状態など）をIndexedDBに保存する
+  // （入力のたびに呼ばれるため、軽く間引く）
+  let persistMetaTimer = null;
+  function persistMetaNow() {
     dbPut(STORE_META, {
       key: 'settings',
+      knownDates: [...state.knownDates],
+      selectedDates: [...state.selectedDates],
       bgStem: state.bgStem,
-      currentDate: state.currentDate,
       checklistSelection: state.checklistSelection,
+      fields: state.fields,
     });
+  }
+  function schedulePersistMeta() {
+    if (persistMetaTimer) clearTimeout(persistMetaTimer);
+    persistMetaTimer = setTimeout(persistMetaNow, 300);
   }
 
   // 起動時にIndexedDBから前回のファイル・設定を読み戻す
@@ -396,16 +452,77 @@ if (typeof document !== 'undefined') {
         label: r.label || '', labelType: r.labelType || null,
         labelValue: r.labelValue != null ? r.labelValue : null,
         useInPlot: r.useInPlot !== false, dateKey: r.dateKey || extractDateKey(r.stem),
+        bgOverrideStem: r.bgOverrideStem || null,
       };
+      registerDateKey(state.files[r.stem].dateKey);
     }
     const metaRecords = await dbGetAll(STORE_META);
     const meta = metaRecords.find(m => m.key === 'settings');
     if (meta) {
-      state.bgStem = meta.bgStem || null;
-      state.currentDate = meta.currentDate || null;
+      if (meta.knownDates) state.knownDates = new Set(meta.knownDates);
+      if (meta.selectedDates) state.selectedDates = new Set(meta.selectedDates);
+      if (meta.fields) state.fields = meta.fields;
       if (meta.checklistSelection) state.checklistSelection = meta.checklistSelection;
+      if (meta.bgStem) state.bgStem = meta.bgStem;
+      // 旧バージョン（日付ごとに設定を持っていた形式）からの簡易移行:
+      // 代表的な1日付分の設定・BGを、ツール全体の共通設定として引き継ぐ。
+      if (!meta.fields && meta.dateSettings) {
+        const firstKey = Object.keys(meta.dateSettings)[0];
+        if (firstKey) {
+          const ds = meta.dateSettings[firstKey];
+          if (ds.fields) state.fields = ds.fields;
+          if (ds.bgStem) state.bgStem = ds.bgStem;
+          if (ds.checklistSelection) state.checklistSelection = ds.checklistSelection;
+        }
+      }
+      if (!meta.selectedDates && meta.currentDate) {
+        state.selectedDates = new Set([meta.currentDate]);
+      }
     }
     renderAll();
+    refreshSidebarTrashCount();
+  }
+
+  /* ---------- 2b. ゴミ箱 ----------
+     「2. 各ファイルの一覧・ラベル」でチェックしたファイルを、読み込んだファイルの一覧から
+     取り除き、ゴミ箱（IndexedDBの trash ストア）に移す。ゴミ箱の中身の閲覧・復元・完全削除は
+     別ページ（trash.html）で行う。 */
+  const trashSelection = new Set(); // チェックボックスで選択中のstem（ページ内だけの一時的な状態）
+
+  async function refreshSidebarTrashCount() {
+    const trashRecords = await dbGetAll(STORE_TRASH);
+    const el = document.getElementById('sidebarTrashCount');
+    if (el) el.textContent = trashRecords.length > 0 ? `(${trashRecords.length})` : '';
+  }
+
+  async function moveStemsToTrash(stems) {
+    if (stems.length === 0) { alert('ゴミ箱へ移動するファイルを選択してください。'); return; }
+    if (!confirm(`${stems.length}件のファイルをゴミ箱へ移動します。続けますか？（ゴミ箱ページから元に戻せます）`)) return;
+
+    const affectedOthers = new Set();
+    for (const stem of stems) {
+      if (!state.files[stem]) continue;
+      const record = fileEntryToRecord(stem);
+      record.trashedAt = Date.now();
+      await dbPut(STORE_TRASH, record);
+      await dbDeleteKey(STORE_FILES, stem);
+      delete state.files[stem];
+      trashSelection.delete(stem);
+
+      if (state.bgStem === stem) state.bgStem = null;
+      delete state.checklistSelection.multiFileChecks[stem];
+      delete state.checklistSelection.intFileChecks[stem];
+      Object.keys(state.files).forEach(other => {
+        if (state.files[other].bgOverrideStem === stem) {
+          state.files[other].bgOverrideStem = null;
+          affectedOthers.add(other);
+        }
+      });
+    }
+    affectedOthers.forEach(other => persistFileEntry(other));
+    schedulePersistMeta();
+    renderAll();
+    refreshSidebarTrashCount();
   }
 
   async function handleFiles(fileList) {
@@ -422,7 +539,9 @@ if (typeof document !== 'undefined') {
           csvData: null, condData: null,
           label: '', labelType: null, labelValue: null,
           useInPlot: true, dateKey: extractDateKey(stem),
+          bgOverrideStem: null,
         };
+        registerDateKey(state.files[stem].dateKey);
       }
       if (ext === 'csv') state.files[stem].csvFile = file;
       else state.files[stem].condFile = file;
@@ -446,97 +565,53 @@ if (typeof document !== 'undefined') {
       }
       persistFileEntry(stem);
     }
+    schedulePersistMeta();
     renderAll();
   }
 
-  /* ---------- 3. 画面描画（一覧・ラベル） ---------- */
+  /* ---------- 3. 全体描画 ---------- */
 
-  function cssEscape(s) { return s.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+  function cssEscape(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
   function renderAll() {
-    renderDateTabs();
-    renderFileSummary();
-    renderFileTable();
-    renderLabelTable();
+    renderSidebarDateList();
+    renderFilesTable();
     populateSelects();
   }
 
-  // 読み込み済みファイルを日付キーごとにグループ化し、タブとして表示する。
-  // state.currentDate がタブ選択と連動し、他の描画関数はこの値でファイルを絞り込む。
-  function renderDateTabs() {
-    const wrap = document.getElementById('section-date');
-    const container = document.getElementById('dateTabs');
-    const dateKeys = [...new Set(Object.values(state.files).map(e => e.dateKey))].sort(naturalCompare);
+  /* ---------- 4. サイドバーの日付一覧（これまで読み込んだ全日付の履歴。複数選択可） ---------- */
+
+  function renderSidebarDateList() {
+    const listEl = document.getElementById('sidebarDateList');
+    const dateKeys = [...state.knownDates].sort(naturalCompare);
+    listEl.innerHTML = '';
     if (dateKeys.length === 0) {
-      wrap.classList.add('hidden');
-      state.currentDate = null;
-      container.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'sidebar-date-empty';
+      p.textContent = 'まだデータがありません';
+      listEl.appendChild(p);
       return;
     }
-    wrap.classList.remove('hidden');
-    if (!state.currentDate || !dateKeys.includes(state.currentDate)) {
-      state.currentDate = dateKeys[0];
-    }
-    container.innerHTML = '';
     for (const key of dateKeys) {
       const count = Object.values(state.files).filter(e => e.dateKey === key).length;
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'date-tab-btn' + (key === state.currentDate ? ' active' : '');
-      btn.textContent = `${key} (${count}件)`;
-      btn.addEventListener('click', () => {
-        state.currentDate = key;
-        persistMeta();
-        renderAll();
+      const item = document.createElement('button');
+      item.type = 'button';
+      const active = state.selectedDates.has(key);
+      item.className = 'sidebar-date-item' + (active ? ' active' : '');
+      item.setAttribute('aria-pressed', active ? 'true' : 'false');
+      item.textContent = `${key} (${count}件)`;
+      item.addEventListener('click', () => {
+        if (state.selectedDates.has(key)) state.selectedDates.delete(key);
+        else state.selectedDates.add(key);
+        schedulePersistMeta();
+        renderSidebarDateList();
+        renderFilesTable();
       });
-      container.appendChild(btn);
+      listEl.appendChild(item);
     }
   }
 
-  function renderFileSummary() {
-    const allStems = Object.keys(state.files);
-    const el = document.getElementById('fileSummary');
-    if (allStems.length === 0) { el.innerHTML = ''; return; }
-    const stems = allStems.filter(s => state.files[s].dateKey === state.currentDate);
-    let paired = 0, csvOnly = 0, condOnly = 0;
-    for (const s of stems) {
-      const e = state.files[s];
-      if (e.csvFile && e.condFile) paired++;
-      else if (e.csvFile) csvOnly++;
-      else condOnly++;
-    }
-    let html = `<span class="ok">${stems.length} 件のファイル名を認識（csv/887ペア: ${paired} 組）— 日付: ${state.currentDate}</span>`;
-    if (csvOnly > 0) html += `<br><span class="warn">.887 が見つからないファイル: ${csvOnly} 件</span>`;
-    if (condOnly > 0) html += `<br><span class="warn">.csv が見つからないファイル: ${condOnly} 件</span>`;
-    if (allStems.length !== stems.length) {
-      html += `<br><span class="hint-inline">（読み込み済みの全ファイル: ${allStems.length} 件。他の日付は上の「日付を選択」タブから見られます）</span>`;
-    }
-    el.innerHTML = html;
-  }
-
-  function renderFileTable() {
-    const stems = Object.keys(state.files)
-      .filter(s => state.files[s].dateKey === state.currentDate)
-      .sort(naturalCompare);
-    const tbody = document.getElementById('fileTableBody');
-    const table = document.getElementById('fileTable');
-    const empty = document.getElementById('fileListEmpty');
-    if (stems.length === 0) { table.classList.add('hidden'); empty.classList.remove('hidden'); return; }
-    table.classList.remove('hidden'); empty.classList.add('hidden');
-    tbody.innerHTML = '';
-    for (const stem of stems) {
-      const e = state.files[stem];
-      const cond = e.condData || {};
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${stem}</td>
-        <td>${e.csvFile ? '✓' : '✗'}</td>
-        <td>${e.condFile ? '✓' : '✗'}</td>
-        <td>${cond.measurement_time || ''}</td>
-        <td>${cond.SWEEPS || ''}</td>`;
-      tbody.appendChild(tr);
-    }
-  }
+  /* ---------- 5. 「2. 各ファイルの一覧・ラベル」（統合表） ---------- */
 
   function describeLabelType(e) {
     if (e.labelType === 'number') return '数値';
@@ -565,22 +640,78 @@ if (typeof document !== 'undefined') {
     persistFileEntry(stem);
   }
 
-  function renderLabelTable() {
-    const stems = Object.keys(state.files)
-      .filter(s => state.files[s].dateKey === state.currentDate)
-      .sort(naturalCompare);
-    const tbody = document.getElementById('labelTableBody');
-    const table = document.getElementById('labelTable');
-    const empty = document.getElementById('labelListEmpty');
-    if (stems.length === 0) { table.classList.add('hidden'); empty.classList.remove('hidden'); return; }
+  // 個別BGモードON時、ファイルに個別BGの指定があればそれを優先し、なければ共通BGにフォールバックする
+  function resolveBgForFile(stem, commonBgStem) {
+    const perFileMode = document.getElementById('bgPerFileMode').checked;
+    const entry = state.files[stem];
+    if (perFileMode && entry && entry.bgOverrideStem && state.files[entry.bgOverrideStem]) {
+      return entry.bgOverrideStem;
+    }
+    return commonBgStem;
+  }
+
+  function renderFilesTable() {
+    const perFileMode = document.getElementById('bgPerFileMode').checked;
+    const allStems = Object.keys(state.files)
+      .filter(s => state.selectedDates.has(state.files[s].dateKey))
+      .sort((a, b) => {
+        const da = state.files[a].dateKey, db = state.files[b].dateKey;
+        if (da !== db) return naturalCompare(da, db);
+        return naturalCompare(a, b);
+      });
+
+    const tbody = document.getElementById('filesTableBody');
+    const table = document.getElementById('filesTable');
+    const empty = document.getElementById('filesListEmpty');
+    document.querySelector('.col-individual-bg').classList.toggle('hidden', !perFileMode);
+
+    if (allStems.length === 0) { table.classList.add('hidden'); empty.classList.remove('hidden'); return; }
     table.classList.remove('hidden'); empty.classList.add('hidden');
     tbody.innerHTML = '';
-    for (const stem of stems) {
+
+    // すべての選択済みファイル（個別BGの候補は、表示中の日付に関わらず読み込んだ全ファイルから選べる）
+    const allLoadedStems = Object.keys(state.files).sort(naturalCompare);
+
+    let lastDateKey = null;
+    for (const stem of allStems) {
       const e = state.files[stem];
+      if (e.dateKey !== lastDateKey) {
+        lastDateKey = e.dateKey;
+        const groupTr = document.createElement('tr');
+        groupTr.className = 'date-group-row';
+        const groupTd = document.createElement('td');
+        groupTd.colSpan = perFileMode ? 12 : 11;
+        groupTd.textContent = `日付: ${lastDateKey}`;
+        groupTr.appendChild(groupTd);
+        tbody.appendChild(groupTr);
+      }
+
+      const cond = e.condData || {};
       const tr = document.createElement('tr');
+
+      const tdTrash = document.createElement('td');
+      const trashCb = document.createElement('input');
+      trashCb.type = 'checkbox';
+      trashCb.checked = trashSelection.has(stem);
+      trashCb.addEventListener('change', () => {
+        if (trashCb.checked) trashSelection.add(stem); else trashSelection.delete(stem);
+        const selectAllCb = document.getElementById('trashSelectAll');
+        if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
+      });
+      tdTrash.appendChild(trashCb);
 
       const tdName = document.createElement('td');
       tdName.textContent = stem;
+      const tdCond = document.createElement('td');
+      tdCond.textContent = e.condFile ? '✓' : '✗';
+      const tdCsv = document.createElement('td');
+      tdCsv.textContent = e.csvFile ? '✓' : '✗';
+      const tdTime = document.createElement('td');
+      tdTime.textContent = cond.measurement_time || '';
+      const tdSweeps = document.createElement('td');
+      tdSweeps.textContent = cond.SWEEPS || '';
+      const tdCalfact = document.createElement('td');
+      tdCalfact.textContent = ('calfact' in cond) ? formatCalfact(cond.calfact) : '-';
 
       const tdLabel = document.createElement('td');
       const input = document.createElement('input');
@@ -594,18 +725,17 @@ if (typeof document !== 'undefined') {
       tdType.id = `labelType-${cssEscape(stem)}`;
       tdType.textContent = describeLabelType(e);
 
-      const tdCalfact = document.createElement('td');
-      const cond = e.condData || {};
-      tdCalfact.textContent = ('calfact' in cond) ? cond.calfact : '-';
-
       const tdUse = document.createElement('td');
       const useCb = document.createElement('input');
       useCb.type = 'checkbox';
+      useCb.className = 'use-in-plot-cb';
       useCb.checked = e.useInPlot !== false;
       useCb.addEventListener('change', () => {
         e.useInPlot = useCb.checked;
         populateChecklists();
         persistFileEntry(stem);
+        const useAllCb = document.getElementById('useInPlotSelectAll');
+        if (useAllCb) useAllCb.checked = allStems.length > 0 && allStems.every(s => state.files[s].useInPlot !== false);
       });
       tdUse.appendChild(useCb);
 
@@ -617,27 +747,56 @@ if (typeof document !== 'undefined') {
       radio.addEventListener('change', () => {
         state.bgStem = stem;
         populateSelects();
-        // グラフのBG選択欄を、ラベルタブで新しく指定したBGファイルに強制的に合わせる
-        // （populateSelectsは既存の選択を優先して保持するため、ここで明示的に上書きする）
+        // グラフのBG選択欄を、指定した共通BGファイルに強制的に合わせる
         ['diffBgSelect', 'multiBgSelect', 'intBgSelect'].forEach(id => {
           const sel = document.getElementById(id);
           if (Array.from(sel.options).some(o => o.value === stem)) sel.value = stem;
         });
         populateChecklists();
-        persistMeta();
+        schedulePersistMeta();
       });
       tdBg.appendChild(radio);
 
-      tr.appendChild(tdName); tr.appendChild(tdLabel); tr.appendChild(tdType);
-      tr.appendChild(tdCalfact); tr.appendChild(tdUse); tr.appendChild(tdBg);
+      const tdIndividualBg = document.createElement('td');
+      tdIndividualBg.className = 'individual-bg-cell' + (perFileMode ? '' : ' hidden');
+      const bgSelect = document.createElement('select');
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = '(共通BGを使用)';
+      bgSelect.appendChild(noneOpt);
+      for (const other of allLoadedStems) {
+        if (other === stem) continue;
+        const opt = document.createElement('option');
+        opt.value = other;
+        opt.textContent = other;
+        bgSelect.appendChild(opt);
+      }
+      bgSelect.value = e.bgOverrideStem && state.files[e.bgOverrideStem] ? e.bgOverrideStem : '';
+      bgSelect.addEventListener('change', () => {
+        e.bgOverrideStem = bgSelect.value || null;
+        persistFileEntry(stem);
+      });
+      tdIndividualBg.appendChild(bgSelect);
+
+      tr.appendChild(tdTrash);
+      tr.appendChild(tdName); tr.appendChild(tdCond); tr.appendChild(tdCsv);
+      tr.appendChild(tdTime); tr.appendChild(tdSweeps); tr.appendChild(tdCalfact);
+      tr.appendChild(tdLabel); tr.appendChild(tdType); tr.appendChild(tdUse);
+      tr.appendChild(tdBg); tr.appendChild(tdIndividualBg);
       tbody.appendChild(tr);
     }
+    const selectAllCb = document.getElementById('trashSelectAll');
+    if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
+    const useAllCb = document.getElementById('useInPlotSelectAll');
+    if (useAllCb) useAllCb.checked = allStems.length > 0 && allStems.every(s => state.files[s].useInPlot !== false);
   }
 
+  /* ---------- 6. 「3. グラフを描画する」向けのファイル選択・チェックリスト ----------
+     日付を問わず、読み込んだ全ファイルから選択できる（複数日付のファイルを1つの
+     グラフに重ね書きできるようにするため）。 */
+
   function populateSelects() {
-    const stems = Object.keys(state.files)
-      .filter(s => state.files[s].csvFile && state.files[s].dateKey === state.currentDate)
-      .sort(naturalCompare);
+    const stems = Object.keys(state.files).filter(s => state.files[s].csvFile).sort(naturalCompare);
     const selects = ['rawFileSelect', 'massFileSelect', 'diffSignalSelect', 'diffBgSelect', 'multiBgSelect', 'intBgSelect'];
     for (const id of selects) {
       const sel = document.getElementById(id);
@@ -673,7 +832,7 @@ if (typeof document !== 'undefined') {
       cb.type = 'checkbox';
       cb.value = stem;
       cb.checked = selection[stem] !== false; // stem単位で記憶した選択状態（既定はチェック済み）
-      cb.addEventListener('change', () => { selection[stem] = cb.checked; });
+      cb.addEventListener('change', () => { selection[stem] = cb.checked; schedulePersistMeta(); });
       label.appendChild(cb);
       label.appendChild(document.createTextNode(`${stem} (${state.files[stem].labelValue})`));
       container.appendChild(label);
@@ -682,13 +841,56 @@ if (typeof document !== 'undefined') {
 
   function populateChecklists() {
     const numericStems = Object.keys(state.files).filter(s =>
-      state.files[s].csvFile && state.files[s].labelType === 'number' &&
-      state.files[s].useInPlot !== false && state.files[s].dateKey === state.currentDate);
+      state.files[s].csvFile && state.files[s].labelType === 'number' && state.files[s].useInPlot !== false);
     buildChecklist('multiFileChecks', numericStems, document.getElementById('multiBgSelect').value);
     buildChecklist('intFileChecks', numericStems, document.getElementById('intBgSelect').value);
   }
 
-  /* ---------- 4. 軸レンジ・グラフ共通ヘルパー ---------- */
+  /* ---------- 7. 表示設定・軸範囲・質量校正入力値の記憶（ページ更新をまたいで保持する） ---------- */
+
+  const PERSIST_FIELD_IDS = [
+    'graphWidth', 'graphHeight', 'graphLineColorEnable', 'graphLineColor', 'graphColorPalette', 'graphLineWidth', 'graphLegendInset',
+    'rawShowCond', 'rawShowGrid', 'rawLogY', 'rawXAuto', 'rawXMin', 'rawXMax', 'rawYAuto', 'rawYMin', 'rawYMax',
+    'massThreshold', 'massDistance', 'massStep', 'massSmoothWin', 'massRangeAuto', 'massRangeMin', 'massRangeMax',
+    'massJacobian', 'massXAuto', 'massXMin', 'massXMax', 'massYAuto', 'massYMin', 'massYMax', 'massLogY', 'massHeLines', 'massCalLines',
+    'diffXAxis', 'diffCalibA', 'diffCalibB', 'diffSmoothWin', 'diffShowCond', 'diffLogY',
+    'diffXAuto', 'diffXMin', 'diffXMax', 'diffYAuto', 'diffYMin', 'diffYMax',
+    'multiXAxis', 'multiCalibA', 'multiCalibB', 'multiSmoothWin', 'multiGrid', 'multiLogY',
+    'multiXAuto', 'multiXMin', 'multiXMax', 'multiYAuto', 'multiYMin', 'multiYMax',
+    'int1Start', 'int1End', 'int2Start', 'int2End', 'intSmoothWin', 'intXLabel', 'intGrid', 'intErrbar', 'intLine', 'intLogY', 'intLogX',
+    'bgPerFileMode',
+  ];
+  // ファイル選択（rawFileSelect等）・BG選択は、ファイル一覧が変わるたびにoptionを作り直すため
+  // ここでの自動復元の対象からは含めない（populateSelects側で個別に復元する）。
+
+  function fieldGet(el) {
+    if (el.type === 'checkbox') return el.checked;
+    return el.value;
+  }
+  function fieldSet(el, v) {
+    if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+  }
+
+  function bindPersistentFields() {
+    for (const id of PERSIST_FIELD_IDS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (Object.prototype.hasOwnProperty.call(state.fields, id)) {
+        fieldSet(el, state.fields[id]);
+      } else {
+        state.fields[id] = fieldGet(el); // まだ記憶がなければHTMLの既定値を記憶しておく
+      }
+      const handler = () => {
+        state.fields[id] = fieldGet(el);
+        schedulePersistMeta();
+        if (id === 'bgPerFileMode') renderFilesTable();
+      };
+      el.addEventListener('input', handler);
+      el.addEventListener('change', handler);
+    }
+  }
+
+  /* ---------- 8. 軸レンジ・グラフ共通ヘルパー ---------- */
 
   function setXAxisRange(layout, auto, min, max) {
     if (!auto && Number.isFinite(min) && Number.isFinite(max)) layout.xaxis.range = [min, max];
@@ -710,22 +912,21 @@ if (typeof document !== 'undefined') {
     update();
   }
 
-  function syncCalibFields() {
-    if (state.lastCalib.a == null) return;
-    const aStr = state.lastCalib.a.toExponential(6);
-    const bStr = state.lastCalib.b.toExponential(6);
+  function syncCalibFields(a, b) {
+    if (a == null) return;
+    const aStr = a.toExponential(6);
+    const bStr = b.toExponential(6);
     for (const id of ['diffCalibA', 'multiCalibA']) {
       const el = document.getElementById(id);
-      if (!el.value.trim()) el.value = aStr;
+      if (!el.value.trim()) { el.value = aStr; el.dispatchEvent(new Event('change')); }
     }
     for (const id of ['diffCalibB', 'multiCalibB']) {
       const el = document.getElementById(id);
-      if (!el.value.trim()) el.value = bStr;
+      if (!el.value.trim()) { el.value = bStr; el.dispatchEvent(new Event('change')); }
     }
   }
 
-  // グラフタイトルに「使用ファイル」「スムージング窓幅」を追記する（PNG保存時にも画像に焼き込まれる）
-  // 「4. グラフを描画する」欄で指定された幅・高さ(px)を取得する
+  // 「3. グラフを描画する」欄で指定された幅・高さ(px)を取得する
   function getGraphSize() {
     const w = parseInt(document.getElementById('graphWidth').value, 10) || 900;
     const h = parseInt(document.getElementById('graphHeight').value, 10) || 450;
@@ -733,9 +934,6 @@ if (typeof document !== 'undefined') {
   }
 
   // 「⚙ 表示設定」パネルで選べるカラーパレット（1つのグラフに複数の線がある場合の配色）。
-  // 「既定」(default) を選んだ場合は null を返し、これまで通りの固定色（各グラフごとの
-  // steelblue/tomato/redなど）をそのまま使う。他のパレットを選んだ場合のみ、配列の色を
-  // 順番に割り当てて上書きする。
   const COLOR_PALETTES = {
     default: null,
     category10: ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'],
@@ -745,10 +943,6 @@ if (typeof document !== 'undefined') {
     blues: ['#08306b', '#2171b5', '#4292c6', '#6baed6', '#9ecae1', '#c6dbef'],
   };
 
-  // 「⚙ 表示設定」パネルの現在の値（データ線の色・カラーパレット・線の太さ・凡例のグラフ内表示）を取得する。
-  // 「データ線の色を指定する」がオフの場合、colorはnullを返し、各グラフはこれまで通りの
-  // 既定色（steelblue/crimsonなど）をそのまま使う。各入力欄が存在しない場合（読み込み順の
-  // 都合など）も、これまでの見た目と同じ既定値を返す。
   function getGraphStyle() {
     const enableEl = document.getElementById('graphLineColorEnable');
     const colorEl = document.getElementById('graphLineColor');
@@ -764,15 +958,11 @@ if (typeof document !== 'undefined') {
     };
   }
 
-  // 1つのグラフに複数の線がある場合の色を決める。パレットが選択されていればその配列から
-  // index番目の色を順に割り当て、「既定」パレットの場合はこれまで通り固定色(fallback)を使う。
   function pickColor(palette, index, fallback) {
     if (palette && palette.length) return palette[index % palette.length];
     return fallback;
   }
 
-  // カンマ区切りの長いリスト（ファイル名など）を、指定した1行あたりの文字数を超えないよう
-  // カンマの区切りごとに改行(<br>)を挿入する。ファイル名の途中では改行しない。
   function wrapCommaList(text, maxCharsPerLine) {
     if (!text) return text;
     const parts = text.split(', ');
@@ -791,8 +981,6 @@ if (typeof document !== 'undefined') {
     return lines.join('<br>');
   }
 
-  // グラフタイトルに「使用ファイル」「スムージング窓幅」を追記する（PNG保存時にも画像に焼き込まれる）。
-  // ファイル名の合計が現在のグラフ幅より長くなる場合は自動的に改行する。
   function withMeta(mainTitle, filesText, smoothWindow) {
     const parts = [];
     if (filesText) {
@@ -805,14 +993,10 @@ if (typeof document !== 'undefined') {
     return `${mainTitle}<br><span style="font-size:11px;color:#666666">${parts.join(' &nbsp;|&nbsp; ')}</span>`;
   }
 
-  // ファイル名に使えない文字を "_" に置き換える
   function sanitizeFilename(s) {
     return String(s).replace(/[^a-zA-Z0-9_\-]+/g, '_');
   }
 
-  // 凡例(レジェンド)の配置。「⚙ 表示設定」で「凡例をグラフ内に表示(inset)」がオフの場合は
-  // 従来通りグラフの外・右側に配置し、ファイル数が多くても凡例がグラフ内に収まりきらず
-  // 切れてしまうのを防ぐ。オンの場合はグラフ内側（右上）に重ねて表示する。
   function applyLegendLayout(layout) {
     const { legendInset } = getGraphStyle();
     if (legendInset) {
@@ -827,13 +1011,12 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  // 「4. グラフを描画する」欄で指定された幅・高さを、指定した各プロットのコンテナに反映する
   function applyGraphSize(divIds) {
     const { w, h } = getGraphSize();
     divIds.forEach(id => {
       const div = document.getElementById(id);
       if (div) {
-        div.style.flex = 'none'; // 幅・高さを固定するため、plot-areaのflex伸縮指定を無効化する
+        div.style.flex = 'none';
         div.style.width = `${w}px`;
         div.style.height = `${h}px`;
       }
@@ -841,17 +1024,11 @@ if (typeof document !== 'undefined') {
     return { w, h };
   }
 
-  // 各グラフ右上のツールバー（モードバー）に表示する「コピー」ボタンのアイコン。
-  // MDI (Material Design Icons) の content-copy と同じ形状（2枚の四角が重なった、
-  // 一般的な「コピー」を表すアイコン）。
   const COPY_ICON = {
     width: 24, height: 24,
     path: 'M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z',
   };
 
-  // グラフ画像をPNGとしてクリップボードにコピーする、モードバー用のカスタムボタン。
-  // 標準のカメラ（ダウンロード）アイコンの隣に表示される。コピーしたPNGはそのまま
-  // Word・PowerPoint・Slackなどに貼り付けて使える。
   function makeCopyModeBarButton() {
     return {
       name: 'copyImage',
@@ -873,8 +1050,6 @@ if (typeof document !== 'undefined') {
     };
   }
 
-  // Plotly.newPlot に渡す共通config。「コピー」ボタンの追加と、カメラ（ダウンロード）
-  // アイコンでPNG保存する際の既定ファイル名をまとめて設定する。
   function getPlotConfig(filename) {
     return {
       responsive: true,
@@ -883,7 +1058,7 @@ if (typeof document !== 'undefined') {
     };
   }
 
-  /* ---------- 5. タブ切替 ---------- */
+  /* ---------- 9. タブ切替 ---------- */
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -894,26 +1069,29 @@ if (typeof document !== 'undefined') {
     });
   });
 
-  /* ---------- 5b. グラフの「⚙ 表示設定」パネル ----------
-     グラフサイズ入力の隣にある歯車ボタンで、色・線の太さ・凡例配置などの
-     パネルの表示/非表示を切り替える。設定値は各グラフを「表示」ボタンで
-     描画する際に読み込まれる（グラフサイズと同じ扱い）。 */
+  /* ---------- 9b. サイドバーのグラフタブへのリンク（クリックでタブ切替＋スクロール） ---------- */
+  document.querySelectorAll('.sidebar-graph-tabs a[data-tab-link]').forEach(a => {
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const tabId = a.dataset.tabLink;
+      const tabBtn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
+      if (tabBtn) tabBtn.click();
+      const target = document.getElementById(tabId);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
+  /* ---------- 9c. グラフの「⚙ 表示設定」パネル ---------- */
   const btnGraphSettings = document.getElementById('btnGraphSettings');
   const graphSettingsPanel = document.getElementById('graphSettingsPanel');
-  if (btnGraphSettings && graphSettingsPanel) {
-    btnGraphSettings.addEventListener('click', () => {
-      graphSettingsPanel.classList.toggle('hidden');
-    });
-  }
+  btnGraphSettings.addEventListener('click', () => graphSettingsPanel.classList.toggle('hidden'));
   const graphLineColorEnable = document.getElementById('graphLineColorEnable');
   const graphLineColor = document.getElementById('graphLineColor');
-  if (graphLineColorEnable && graphLineColor) {
-    const syncColorEnabled = () => { graphLineColor.disabled = !graphLineColorEnable.checked; };
-    graphLineColorEnable.addEventListener('change', syncColorEnabled);
-    syncColorEnabled();
-  }
+  const syncColorEnabled = () => { graphLineColor.disabled = !graphLineColorEnable.checked; };
+  graphLineColorEnable.addEventListener('change', syncColorEnabled);
+  syncColorEnabled();
 
-  /* ---------- 6. ファイル入力まわりの配線 ---------- */
+  /* ---------- 10. ファイル入力まわりの配線 ---------- */
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
@@ -928,15 +1106,16 @@ if (typeof document !== 'undefined') {
   });
   document.getElementById('btnClearFiles').addEventListener('click', () => {
     if (Object.keys(state.files).length > 0 &&
-        !confirm('読み込んだファイル・ラベルはこのブラウザに保存されています。すべてクリアすると保存内容も削除され、元に戻せません。続けますか？')) {
+        !confirm('読み込んだファイル・ラベル・表示設定・ゴミ箱の中身はこのブラウザに保存されています。すべてクリアするとゴミ箱の中身も含めて削除され、元に戻せません。続けますか？')) {
       return;
     }
     state.files = {};
+    state.knownDates = new Set();
+    state.selectedDates = new Set();
     state.bgStem = null;
-    state.currentDate = null;
-    state.lastCalib = { a: null, b: null };
     state.checklistSelection = { multiFileChecks: {}, intFileChecks: {} };
-    dbClear(); // ブラウザに保存していたデータも合わせて削除する
+    trashSelection.clear();
+    dbClear(); // ブラウザに保存していたデータ（ゴミ箱を含む）も合わせて削除する
     document.getElementById('diffCalibA').value = '';
     document.getElementById('diffCalibB').value = '';
     document.getElementById('multiCalibA').value = '';
@@ -946,15 +1125,48 @@ if (typeof document !== 'undefined') {
     ['plotRaw', 'plotMassTof', 'plotMassSpec', 'plotDiffRaw', 'plotDiffDiff',
      'plotMultiRaw', 'plotMultiDiff', 'plotInt1', 'plotInt2', 'plotInt3', 'plotInt4'].forEach(id => {
       const div = document.getElementById(id);
-      if (typeof Plotly !== 'undefined' && div.data) Plotly.purge(div); // .data/.layoutなどPlotlyの内部状態も完全に破棄する
+      if (typeof Plotly !== 'undefined' && div.data) Plotly.purge(div);
       div.innerHTML = '';
       delete div.dataset.filename;
     });
     renderAll();
+    refreshSidebarTrashCount();
+  });
+
+  document.getElementById('btnMoveToTrash').addEventListener('click', () => {
+    moveStemsToTrash([...trashSelection]);
+  });
+  document.getElementById('trashSelectAll').addEventListener('change', (e) => {
+    const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) td:first-child input[type="checkbox"]');
+    rowCbs.forEach(cb => {
+      cb.checked = e.target.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+  });
+  document.getElementById('useInPlotSelectAll').addEventListener('change', (e) => {
+    const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) .use-in-plot-cb');
+    rowCbs.forEach(cb => {
+      cb.checked = e.target.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
   });
 
   document.getElementById('multiBgSelect').addEventListener('change', populateChecklists);
   document.getElementById('intBgSelect').addEventListener('change', populateChecklists);
+
+  // 個別BGモード時、Signalファイルを選ぶと、そのファイルに個別BGの指定があれば
+  // Backgroundの選択欄に自動でセットする（差分タブでの利便性向上。手動での変更も可能）
+  document.getElementById('diffSignalSelect').addEventListener('change', () => {
+    const sigStem = document.getElementById('diffSignalSelect').value;
+    const entry = state.files[sigStem];
+    if (document.getElementById('bgPerFileMode').checked && entry && entry.bgOverrideStem) {
+      const bgSel = document.getElementById('diffBgSelect');
+      if (Array.from(bgSel.options).some(o => o.value === entry.bgOverrideStem)) {
+        bgSel.value = entry.bgOverrideStem;
+        bgSel.dispatchEvent(new Event('change'));
+      }
+    }
+  });
 
   wireAutoToggle('rawXAuto', 'rawXMin', 'rawXMax');
   wireAutoToggle('rawYAuto', 'rawYMin', 'rawYMax');
@@ -966,8 +1178,10 @@ if (typeof document !== 'undefined') {
   wireAutoToggle('multiXAuto', 'multiXMin', 'multiXMax');
   wireAutoToggle('multiYAuto', 'multiYMin', 'multiYMax');
 
+  bindPersistentFields();
+
   /* ============================================================
-     7. タブ1: TOFスペクトル（生データ表示）
+     11. タブ1: TOFスペクトル（生データ表示）
      ============================================================ */
   document.getElementById('btnPlotRaw').addEventListener('click', async () => {
     const stem = document.getElementById('rawFileSelect').value;
@@ -1000,7 +1214,7 @@ if (typeof document !== 'undefined') {
     setXAxisRange(layout, xAuto, xMin, xMax);
     setYAxisRange(layout, yAuto, yMin, yMax, logY);
     applyLegendLayout(layout);
-    const rawFilename = `${state.currentDate}_TOF_${stem}`;
+    const rawFilename = `TOF_${stem}`;
     Plotly.newPlot('plotRaw', [trace], layout, getPlotConfig(rawFilename));
     document.getElementById('plotRaw').dataset.filename = rawFilename;
 
@@ -1008,7 +1222,7 @@ if (typeof document !== 'undefined') {
   });
 
   /* ============================================================
-     8. タブ2: 質量校正・質量スペクトル
+     12. タブ2: 質量校正・質量スペクトル
      ============================================================ */
   document.getElementById('btnPlotMass').addEventListener('click', async () => {
     const stem = document.getElementById('massFileSelect').value;
@@ -1060,8 +1274,7 @@ if (typeof document !== 'undefined') {
     const calib = calibrate(peakTimesS, massStep);
     const { slope: a, intercept: b, r2, startN } = calib;
 
-    state.lastCalib = { a, b };
-    syncCalibFields();
+    syncCalibFields(a, b);
 
     resultBox.innerHTML =
       `${rangeMsg}<br>検出されたピーク数: ${peakTimesS.length}<br>` +
@@ -1082,7 +1295,6 @@ if (typeof document !== 'undefined') {
     const intensityLabel = useJac ? 'Intensity (Jacobian Corrected)' : 'Intensity (Smoothed)';
     const plotLabelName = useJac ? 'Jacobian Corrected' : 'Smoothed';
 
-    // 上段: TOFスペクトル + 検出ピーク（この2系列は「⚙ 表示設定」のパレット選択時、パレットの色を順に使う）
     const { color: lineColor, palette: colorPalette, lineWidth } = getGraphStyle();
     const tofColor = pickColor(colorPalette, 0, lineColor || 'steelblue');
     const peakColor = pickColor(colorPalette, 1, 'red');
@@ -1095,11 +1307,10 @@ if (typeof document !== 'undefined') {
       title: withMeta('TOF Spectrum', stem, smoothWin), xaxis: { title: 'Time (ns)' }, yaxis: { title: 'Counts' }, margin: { t: 40 },
     };
     applyLegendLayout(massTofLayout);
-    const massTofFilename = `${state.currentDate}_MassCal_TOF_${stem}`;
+    const massTofFilename = `MassCal_TOF_${stem}`;
     Plotly.newPlot('plotMassTof', [traceTof, tracePeaks], massTofLayout, getPlotConfig(massTofFilename));
     document.getElementById('plotMassTof').dataset.filename = massTofFilename;
 
-    // 下段: 質量スペクトル
     let startIdx = 0;
     while (startIdx < n && t_s[startIdx] <= b) startIdx++;
     const xMass = [], yMass = [];
@@ -1142,13 +1353,13 @@ if (typeof document !== 'undefined') {
     setYAxisRange(layout2, yAuto, yMinV, yMaxV, logY);
     applyLegendLayout(layout2);
 
-    const massSpecFilename = `${state.currentDate}_MassSpectrum_${stem}`;
+    const massSpecFilename = `MassSpectrum_${stem}`;
     Plotly.newPlot('plotMassSpec', [{ x: xMass, y: yMass, type: 'scattergl', mode: 'lines', line: { width: lineWidth, color: lineColor || 'crimson' }, name: plotLabelName }], layout2, getPlotConfig(massSpecFilename));
     document.getElementById('plotMassSpec').dataset.filename = massSpecFilename;
   });
 
   /* ============================================================
-     9. タブ3: 差分 (Signal - Background)
+     13. タブ3: 差分 (Signal - Background)
      ============================================================ */
   document.getElementById('btnPlotDiff').addEventListener('click', async () => {
     const sigStem = document.getElementById('diffSignalSelect').value;
@@ -1225,7 +1436,7 @@ if (typeof document !== 'undefined') {
     setXAxisRange(layoutRaw, xAuto, xMin, xMax);
     setYAxisRange(layoutRaw, yAuto, yMin, yMax, logY);
     applyLegendLayout(layoutRaw);
-    const diffRawFilename = `${state.currentDate}_Diff_Raw_${sigStem}_vs_${bgStem}`;
+    const diffRawFilename = `Diff_Raw_${sigStem}_vs_${bgStem}`;
     Plotly.newPlot('plotDiffRaw', [
       { x: sigSeries.fx, y: sigSeries.fy, type: 'scattergl', mode: 'lines', name: `Signal: ${sigStem}`, line: { width: diffLineWidth, color: diffSigColor } },
       { x: bgSeries.fx, y: bgSeries.fy, type: 'scattergl', mode: 'lines', name: `BG: ${bgStem}`, line: { width: diffLineWidth, color: diffBgColor }, opacity: 0.7 },
@@ -1236,7 +1447,7 @@ if (typeof document !== 'undefined') {
     setXAxisRange(layoutDiff, xAuto, xMin, xMax);
     setYAxisRange(layoutDiff, yAuto, yMin, yMax, logY);
     applyLegendLayout(layoutDiff);
-    const diffDiffFilename = `${state.currentDate}_Diff_${sigStem}_minus_${bgStem}`;
+    const diffDiffFilename = `Diff_${sigStem}_minus_${bgStem}`;
     Plotly.newPlot('plotDiffDiff', [
       { x: diffSeries.fx, y: diffSeries.fy, type: 'scattergl', mode: 'lines', line: { width: diffLineWidth, color: diffLineColor || 'steelblue' }, name: 'diff' },
     ], layoutDiff, getPlotConfig(diffDiffFilename));
@@ -1253,7 +1464,7 @@ if (typeof document !== 'undefined') {
       lines.push(`  SWEEPS: ${bgCond.SWEEPS || 'N/A'}`);
       if (bgCond.measurement_time) lines.push(`  ${bgCond.measurement_time.slice(0, 45)}`);
       lines.push(`range: ${sigCond.range || 'N/A'}`);
-      lines.push(`calfact: ${sigCond.calfact || 'N/A'}`);
+      lines.push(`calfact: ${sigCond.calfact ? formatCalfact(sigCond.calfact) : 'N/A'}`);
       lines.push(`calunit: ${sigCond.calunit || 'N/A'}`);
       lines.push(window_ > 1 ? `smoothing: ${window_}` : 'smoothing: none');
       condBox.textContent = lines.join('\n');
@@ -1263,23 +1474,17 @@ if (typeof document !== 'undefined') {
   });
 
   /* ============================================================
-     10. タブ4: 複数ファイルの同時プロット (Signal群 - 共通BG)
+     14. タブ4: 複数ファイルの同時プロット (Signal群 - 共通BG / 個別BG)
+     複数の日付にまたがるファイルを選んでも、1つのグラフに重ね書きされる。
      ============================================================ */
   document.getElementById('btnPlotMulti').addEventListener('click', async () => {
-    const bgStem = document.getElementById('multiBgSelect').value;
-    if (!bgStem) { alert('Backgroundファイルを選択してください'); return; }
+    const commonBgStem = document.getElementById('multiBgSelect').value;
+    if (!commonBgStem) { alert('Backgroundファイルを選択してください'); return; }
     const checked = Array.from(document.querySelectorAll('#multiFileChecks input:checked')).map(c => c.value);
     if (checked.length === 0) { alert('重ね書きする信号ファイルを1つ以上選択してください'); return; }
 
-    const bgEntry = state.files[bgStem];
-    const bgCsv = await ensureCsvParsed(bgStem);
-    if (!bgCsv) { alert('BGのcsvファイルが見つかりません'); return; }
     applyGraphSize(['plotMultiRaw', 'plotMultiDiff']);
-    const bgCond = bgEntry.condData || {};
-    const bgTime = makeTimeAxis(bgCsv, bgCond);
-
     const window_ = Math.max(1, parseInt(document.getElementById('multiSmoothWin').value, 10) || 1);
-    const bgCounts = smooth(bgCsv.counts, window_);
 
     const useMass = document.getElementById('multiXAxis').value === 'mass';
     let calibA, calibB;
@@ -1292,11 +1497,23 @@ if (typeof document !== 'undefined') {
       }
     }
 
-    let bgMassX, bgMassMask;
-    if (useMass) {
-      const r = timeToMass(Float64Array.from(bgTime, v => v * 1e-9), calibA, calibB);
-      bgMassX = r.mass; bgMassMask = r.mask;
+    // BGファイルは複数の異なるファイルが使われる可能性があるため、一度読み込んだBGはキャッシュする
+    const bgCache = new Map();
+    async function getBgSeries(bgStem) {
+      if (bgCache.has(bgStem)) return bgCache.get(bgStem);
+      const bgEntry = state.files[bgStem];
+      const bgCsv = await ensureCsvParsed(bgStem);
+      if (!bgCsv) { bgCache.set(bgStem, null); return null; }
+      const bgCond = bgEntry.condData || {};
+      const bgTime = makeTimeAxis(bgCsv, bgCond);
+      const bgCounts = smooth(bgCsv.counts, window_);
+      const result = { bgTime, bgCounts };
+      bgCache.set(bgStem, result);
+      return result;
     }
+
+    const commonBg = await getBgSeries(commonBgStem);
+    if (!commonBg) { alert('BGのcsvファイルが見つかりません'); return; }
 
     const sorted = [...checked].sort((s1, s2) => state.files[s1].labelValue - state.files[s2].labelValue);
 
@@ -1305,19 +1522,25 @@ if (typeof document !== 'undefined') {
     let globalXMin = Infinity, globalXMax = -Infinity;
     const { palette: multiPalette, lineWidth: multiLineWidth } = getGraphStyle();
     let fileColorIdx = 0;
+    const usedBgStems = new Set();
 
     for (const stem of sorted) {
+      const bgStemForThis = resolveBgForFile(stem, commonBgStem);
+      const bgData = await getBgSeries(bgStemForThis);
+      if (!bgData) { console.warn(`${bgStemForThis}.csv (BG) が見つからないため ${stem} をスキップします`); continue; }
+
       const entry = state.files[stem];
       const csv = await ensureCsvParsed(stem);
       if (!csv) { console.warn(`${stem}.csv が見つからないためスキップします`); continue; }
+      usedBgStems.add(bgStemForThis);
       const cond = entry.condData || {};
       const sigTime = makeTimeAxis(csv, cond);
       const sigCounts = smooth(csv.counts, window_);
       let diffCounts;
-      if (arraysEqual(sigTime, bgTime)) {
-        diffCounts = sigCounts.map((v, i) => v - bgCounts[i]);
+      if (arraysEqual(sigTime, bgData.bgTime)) {
+        diffCounts = sigCounts.map((v, i) => v - bgData.bgCounts[i]);
       } else {
-        const bgInterp = interpLinear(sigTime, bgTime, bgCounts);
+        const bgInterp = interpLinear(sigTime, bgData.bgTime, bgData.bgCounts);
         diffCounts = sigCounts.map((v, i) => v - bgInterp[i]);
       }
       const labelText = String(entry.labelValue);
@@ -1338,8 +1561,6 @@ if (typeof document !== 'undefined') {
         globalXMin = Math.min(globalXMin, Math.min(...dFiltered.fx));
         globalXMax = Math.max(globalXMax, Math.max(...dFiltered.fx));
       }
-      // ファイルごとに異なる色を割り当てる。パレットが「既定」の場合はcolorを指定せず、
-      // これまで通りPlotlyの自動配色に任せる。
       const fileColor = pickColor(multiPalette, fileColorIdx, undefined);
       fileColorIdx++;
       const rawLine = { width: multiLineWidth };
@@ -1349,11 +1570,18 @@ if (typeof document !== 'undefined') {
       diffTraces.push({ x: dFiltered.fx, y: dFiltered.fy, type: 'scattergl', mode: 'lines', name: labelText, line: diffLine });
     }
 
-    if (useMass) {
-      const bgFiltered = filterByMaskPair(bgMassX, bgCounts, bgMassMask);
-      rawTraces.push({ x: bgFiltered.fx, y: bgFiltered.fy, type: 'scattergl', mode: 'lines', name: `BG: ${bgStem}`, line: { width: multiLineWidth, color: 'gray', dash: 'dash' }, opacity: 0.6 });
-    } else {
-      rawTraces.push({ x: Array.from(bgTime), y: Array.from(bgCounts), type: 'scattergl', mode: 'lines', name: `BG: ${bgStem}`, line: { width: multiLineWidth, color: 'gray', dash: 'dash' }, opacity: 0.6 });
+    // 全ファイルが同じBGを使っている場合のみ、参考として点線のBGトレースを重ねる
+    // （個別BGが混在する場合は誤解を招くため表示しない）
+    if (usedBgStems.size === 1) {
+      const onlyBgStem = [...usedBgStems][0];
+      const bgData = await getBgSeries(onlyBgStem);
+      if (useMass) {
+        const r = timeToMass(Float64Array.from(bgData.bgTime, v => v * 1e-9), calibA, calibB);
+        const bgFiltered = filterByMaskPair(r.mass, bgData.bgCounts, r.mask);
+        rawTraces.push({ x: bgFiltered.fx, y: bgFiltered.fy, type: 'scattergl', mode: 'lines', name: `BG: ${onlyBgStem}`, line: { width: multiLineWidth, color: 'gray', dash: 'dash' }, opacity: 0.6 });
+      } else {
+        rawTraces.push({ x: Array.from(bgData.bgTime), y: Array.from(bgData.bgCounts), type: 'scattergl', mode: 'lines', name: `BG: ${onlyBgStem}`, line: { width: multiLineWidth, color: 'gray', dash: 'dash' }, opacity: 0.6 });
+      }
     }
 
     const xlabel = useMass ? 'Mass / Charge (u)' : 'Time (ns)';
@@ -1366,7 +1594,8 @@ if (typeof document !== 'undefined') {
     const logY = document.getElementById('multiLogY').checked;
     const showGrid = document.getElementById('multiGrid').checked;
 
-    const filesText = `${sorted.join(', ')} | BG: ${bgStem}`;
+    const bgSummary = usedBgStems.size === 1 ? [...usedBgStems][0] : `${usedBgStems.size}種類（個別BG使用）`;
+    const filesText = `${sorted.join(', ')} | BG: ${bgSummary}`;
     const layoutRaw = { title: withMeta('Raw Data', filesText, window_), xaxis: { title: xlabel, showgrid: showGrid }, yaxis: { title: 'Counts', showgrid: showGrid }, margin: { t: 40 } };
     const layoutDiff = { title: withMeta('Difference Plot', filesText, window_), xaxis: { title: xlabel, showgrid: showGrid }, yaxis: { title: 'Counts (Signal − BG)', showgrid: showGrid }, margin: { t: 40 } };
     const xr = xAuto ? [globalXMin, globalXMax] : [xMin, xMax];
@@ -1378,20 +1607,21 @@ if (typeof document !== 'undefined') {
     applyLegendLayout(layoutRaw);
     applyLegendLayout(layoutDiff);
 
-    const multiRawFilename = `${state.currentDate}_Multi_Raw_BG_${bgStem}`;
+    const bgTag = bgSummary.replace(/[^a-zA-Z0-9_-]+/g, '_');
+    const multiRawFilename = `Multi_Raw_BG_${bgTag}`;
     Plotly.newPlot('plotMultiRaw', rawTraces, layoutRaw, getPlotConfig(multiRawFilename));
     document.getElementById('plotMultiRaw').dataset.filename = multiRawFilename;
-    const multiDiffFilename = `${state.currentDate}_Multi_Diff_BG_${bgStem}`;
+    const multiDiffFilename = `Multi_Diff_BG_${bgTag}`;
     Plotly.newPlot('plotMultiDiff', diffTraces, layoutDiff, getPlotConfig(multiDiffFilename));
     document.getElementById('plotMultiDiff').dataset.filename = multiDiffFilename;
   });
 
   /* ============================================================
-     11. タブ5: 2範囲積算・比プロット
+     15. タブ5: 2範囲積算・比プロット（複数日付をまたいで選択可能）
      ============================================================ */
   document.getElementById('btnPlotIntegration').addEventListener('click', async () => {
-    const bgStem = document.getElementById('intBgSelect').value;
-    if (!bgStem) { alert('Backgroundファイルを選択してください'); return; }
+    const commonBgStem = document.getElementById('intBgSelect').value;
+    if (!commonBgStem) { alert('Backgroundファイルを選択してください'); return; }
     const checked = Array.from(document.querySelectorAll('#intFileChecks input:checked')).map(c => c.value);
     if (checked.length === 0) { alert('積算対象の信号ファイルを1つ以上選択してください'); return; }
 
@@ -1402,34 +1632,47 @@ if (typeof document !== 'undefined') {
     const window_ = Math.max(1, parseInt(document.getElementById('intSmoothWin').value, 10) || 1);
     const xlabel = document.getElementById('intXLabel').value.trim() || 'X';
 
-    const bgEntry = state.files[bgStem];
-    const bgCsv = await ensureCsvParsed(bgStem);
-    if (!bgCsv) { alert('BGのcsvファイルが見つかりません'); return; }
     applyGraphSize(['plotInt1', 'plotInt2', 'plotInt3', 'plotInt4']);
-    const bgCond = bgEntry.condData || {};
-    const bgTime = makeTimeAxis(bgCsv, bgCond);
-    const bgCountsRaw = bgCsv.counts;
-    const bgCountsSmooth = smooth(bgCountsRaw, window_);
+
+    const bgCache = new Map();
+    async function getBgSeries(bgStem) {
+      if (bgCache.has(bgStem)) return bgCache.get(bgStem);
+      const bgEntry = state.files[bgStem];
+      const bgCsv = await ensureCsvParsed(bgStem);
+      if (!bgCsv) { bgCache.set(bgStem, null); return null; }
+      const bgCond = bgEntry.condData || {};
+      const bgTime = makeTimeAxis(bgCsv, bgCond);
+      const result = { bgTime, bgCountsRaw: bgCsv.counts, bgCountsSmooth: smooth(bgCsv.counts, window_) };
+      bgCache.set(bgStem, result);
+      return result;
+    }
+    const commonBg = await getBgSeries(commonBgStem);
+    if (!commonBg) { alert('BGのcsvファイルが見つかりません'); return; }
 
     const results = [];
+    const usedBgStems = new Set();
     for (const stem of checked) {
       const entry = state.files[stem];
       if (entry.labelType !== 'number') continue;
+      const bgStemForThis = resolveBgForFile(stem, commonBgStem);
+      const bg = await getBgSeries(bgStemForThis);
+      if (!bg) continue;
       const csv = await ensureCsvParsed(stem);
       if (!csv) continue;
+      usedBgStems.add(bgStemForThis);
       const cond = entry.condData || {};
       const sigTime = makeTimeAxis(csv, cond);
       const sigCountsRaw = csv.counts;
       const sigCountsSmooth = smooth(sigCountsRaw, window_);
 
       let diffCounts, bgRawInterp;
-      if (arraysEqual(sigTime, bgTime)) {
-        diffCounts = sigCountsSmooth.map((v, i) => v - bgCountsSmooth[i]);
-        bgRawInterp = bgCountsRaw;
+      if (arraysEqual(sigTime, bg.bgTime)) {
+        diffCounts = sigCountsSmooth.map((v, i) => v - bg.bgCountsSmooth[i]);
+        bgRawInterp = bg.bgCountsRaw;
       } else {
-        const bgSmoothInterp = interpLinear(sigTime, bgTime, bgCountsSmooth);
+        const bgSmoothInterp = interpLinear(sigTime, bg.bgTime, bg.bgCountsSmooth);
         diffCounts = sigCountsSmooth.map((v, i) => v - bgSmoothInterp[i]);
-        bgRawInterp = interpLinear(sigTime, bgTime, bgCountsRaw);
+        bgRawInterp = interpLinear(sigTime, bg.bgTime, bg.bgCountsRaw);
       }
 
       const mask1 = maskRange(sigTime, int1Start, int1End);
@@ -1440,7 +1683,7 @@ if (typeof document !== 'undefined') {
       const err1 = Math.sqrt(sumMasked(sigCountsRaw, mask1) + sumMasked(bgRawInterp, mask1));
       const err2 = Math.sqrt(sumMasked(sigCountsRaw, mask2) + sumMasked(bgRawInterp, mask2));
 
-      results.push({ stem, label: entry.labelValue, integral1, integral2, err1, err2 });
+      results.push({ stem, label: entry.labelValue, integral1, integral2, err1, err2, bgStem: bgStemForThis });
     }
 
     if (results.length === 0) { alert('有効なデータが見つかりませんでした（数値ラベルの信号ファイルを選択してください）'); return; }
@@ -1465,8 +1708,6 @@ if (typeof document !== 'undefined') {
     const showGrid = document.getElementById('intGrid').checked;
     const mode = useLine ? 'lines+markers' : 'markers';
 
-    // 「⚙ 表示設定」のパレットが選択されていれば既定のblue/orange/greenをその配色に置き換え、
-    // 線の太さも共通設定を反映する。
     const { palette: intPalette, lineWidth: intLineWidth } = getGraphStyle();
     function makeTrace(y, err, name, color, symbol, paletteIdx) {
       const resolvedColor = pickColor(intPalette, paletteIdx, color);
@@ -1474,7 +1715,8 @@ if (typeof document !== 'undefined') {
       if (showErr) trace.error_y = { type: 'data', array: err, visible: true };
       return trace;
     }
-    const filesText = `${results.map(r => r.stem).join(', ')} | BG: ${bgStem}`;
+    const bgSummary = usedBgStems.size === 1 ? [...usedBgStems][0] : `${usedBgStems.size}種類（個別BG使用）`;
+    const filesText = `${results.map(r => r.stem).join(', ')} | BG: ${bgSummary}`;
     const baseLayout = (title, ytitle) => {
       const layout = {
         title: withMeta(title, filesText, window_),
@@ -1486,16 +1728,17 @@ if (typeof document !== 'undefined') {
       return layout;
     };
 
-    const int1Filename = `${state.currentDate}_Integration_Range1_BG_${bgStem}`;
+    const bgTag = bgSummary.replace(/[^a-zA-Z0-9_-]+/g, '_');
+    const int1Filename = `Integration_Range1_BG_${bgTag}`;
     Plotly.newPlot('plotInt1', [makeTrace(i1, e1, 'Range 1', 'blue', 'circle', 0)], baseLayout(`Range 1 (${int1Start} - ${int1End} ns)`, 'Integrated Counts'), getPlotConfig(int1Filename));
     document.getElementById('plotInt1').dataset.filename = int1Filename;
-    const int2Filename = `${state.currentDate}_Integration_Range2_BG_${bgStem}`;
+    const int2Filename = `Integration_Range2_BG_${bgTag}`;
     Plotly.newPlot('plotInt2', [makeTrace(i2, e2, 'Range 2', 'orange', 'square', 0)], baseLayout(`Range 2 (${int2Start} - ${int2End} ns)`, 'Integrated Counts'), getPlotConfig(int2Filename));
     document.getElementById('plotInt2').dataset.filename = int2Filename;
-    const int3Filename = `${state.currentDate}_Integration_Simultaneous_BG_${bgStem}`;
+    const int3Filename = `Integration_Simultaneous_BG_${bgTag}`;
     Plotly.newPlot('plotInt3', [makeTrace(i1, e1, 'Range 1', 'blue', 'circle', 0), makeTrace(i2, e2, 'Range 2', 'orange', 'square', 1)], baseLayout('Simultaneous Plot', 'Integrated Counts'), getPlotConfig(int3Filename));
     document.getElementById('plotInt3').dataset.filename = int3Filename;
-    const int4Filename = `${state.currentDate}_Integration_Ratio_BG_${bgStem}`;
+    const int4Filename = `Integration_Ratio_BG_${bgTag}`;
     Plotly.newPlot('plotInt4', [makeTrace(ratio, ratioErr, 'Range 1 / Range 2', 'green', 'triangle-up', 0)], baseLayout('Ratio (Range 1 / Range 2)', 'Range 1 / Range 2'), getPlotConfig(int4Filename));
     document.getElementById('plotInt4').dataset.filename = int4Filename;
 
@@ -1509,95 +1752,6 @@ if (typeof document !== 'undefined') {
     });
     document.getElementById('intResultTable').classList.remove('hidden');
   });
-
-  /* ============================================================
-     12. 「5. コードを編集する」— app.js の表示・編集・プレビュー再実行
-     ============================================================
-     index.html と app.js を fetch で取得し、テキストエリアに表示する。
-     「変更を反映して再実行」を押すと、取得済みの index.html の <script src="app.js">
-     をテキストエリアの内容に差し替えたHTMLを組み立て、iframeのsrcdocに設定して
-     独立したJS実行環境（別のグローバルスコープ）でツール全体を再読み込みする。
-     こうすることで、このページ自体の const/関数宣言と衝突せずに編集結果をその場で試せる。
-     fetch は同一オリジンの静的ファイル読込みが前提のため、file:// で直接開いた場合は
-     失敗することがある（その場合はローカルサーバー経由か公開ページの利用を案内する）。 */
-  (function setupCodeEditor() {
-    const codeEditor = document.getElementById('codeEditor');
-    const codeStatus = document.getElementById('codeStatus');
-    const previewFrame = document.getElementById('codePreviewFrame');
-    const btnRunCode = document.getElementById('btnRunCode');
-    const btnResetCode = document.getElementById('btnResetCode');
-    const btnDownloadCode = document.getElementById('btnDownloadCode');
-    if (!codeEditor || !previewFrame || !btnRunCode) return;
-
-    let originalCode = null;
-    let originalIndexHtml = null;
-
-    function setStatus(msg, isWarn) {
-      codeStatus.textContent = msg || '';
-      codeStatus.classList.toggle('warn', !!isWarn);
-    }
-
-    async function loadOriginalSource() {
-      setStatus('読み込み中...');
-      try {
-        const [codeText, htmlText] = await Promise.all([
-          fetch('app.js', { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(String(r.status)); return r.text(); }),
-          fetch('index.html', { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(String(r.status)); return r.text(); }),
-        ]);
-        originalCode = codeText;
-        originalIndexHtml = htmlText;
-        codeEditor.value = originalCode;
-        setStatus('');
-      } catch (e) {
-        setStatus('コードの読み込みに失敗しました。file:// で直接開いている場合はローカルサーバー経由で開くか、公開ページをご利用ください。', true);
-      }
-    }
-
-    // 取得済みの index.html から「5. コードを編集する」欄自体を取り除き、
-    // <script src="app.js"> を編集後のコードのインラインscriptに差し替えたHTML文字列を作る。
-    function buildPreviewHtml(code) {
-      const doc = new DOMParser().parseFromString(originalIndexHtml, 'text/html');
-      const codeSection = doc.getElementById('section-code');
-      if (codeSection) codeSection.remove();
-      doc.querySelectorAll('script[src="app.js"]').forEach(scriptEl => {
-        const inline = doc.createElement('script');
-        inline.textContent = code;
-        scriptEl.replaceWith(inline);
-      });
-      return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
-    }
-
-    btnRunCode.addEventListener('click', () => {
-      if (originalIndexHtml == null) { alert('元のコードがまだ読み込めていません。'); return; }
-      try {
-        previewFrame.srcdoc = buildPreviewHtml(codeEditor.value);
-        setStatus(`反映しました（${new Date().toLocaleTimeString()}）`);
-      } catch (e) {
-        setStatus('プレビューの生成に失敗しました: ' + (e && e.message ? e.message : e), true);
-      }
-    });
-
-    btnResetCode.addEventListener('click', () => {
-      if (originalCode == null) { alert('元のコードがまだ読み込めていません。'); return; }
-      if (codeEditor.value !== originalCode && !confirm('編集内容を破棄して元のコードに戻しますか？')) return;
-      codeEditor.value = originalCode;
-      setStatus('元のコードに戻しました');
-    });
-
-    btnDownloadCode.addEventListener('click', () => {
-      const blob = new Blob([codeEditor.value], { type: 'text/javascript' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'app.js';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    });
-
-    loadOriginalSource();
-  })();
 
   /* ---------- 初期描画（IndexedDBに保存済みのファイル・設定があれば自動復元する） ---------- */
   renderAll();

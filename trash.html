@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ゴミ箱 — TOF-MS データ解析ツール</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <div>
+      <h1>🗑 ゴミ箱</h1>
+      <p class="sub">「2. 各ファイルの一覧・ラベル」でゴミ箱へ移動したファイルがここに表示されます。<a href="index.html">← 解析ツールに戻る</a></p>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="section-trash">
+    <p class="hint">
+      「元に戻す」を押すと、そのファイルが解析ツール本体（<code>index.html</code>）の「2. 各ファイルの一覧・ラベル」に復元されます。
+      「完全に削除」を押すと、このブラウザからそのファイルのデータが完全に削除され、元に戻せません。
+      復元・削除の結果を解析ツール本体に反映するには、そのページを開いているタブを再読み込みしてください。
+    </p>
+    <div class="trash-action-bar">
+      <button class="btn btn-ghost" id="btnEmptyTrash" type="button">ゴミ箱を空にする（すべて完全に削除）</button>
+      <span class="hint-inline" id="trashCountText"></span>
+    </div>
+    <div class="empty hidden" id="trashEmpty">ゴミ箱は空です。</div>
+    <table class="data-table hidden" id="trashTable">
+      <thead>
+        <tr>
+          <th>ファイル名</th>
+          <th>日付</th>
+          <th>ラベル</th>
+          <th>種別</th>
+          <th>.887</th>
+          <th>.csv</th>
+          <th>測定時間</th>
+          <th>SWEEPS</th>
+          <th>calfact</th>
+          <th>ゴミ箱に移動した日時</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="trashTableBody"></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>
+  <p>TOF-MS Data Analysis Tool — ゴミ箱ページ。ここでのデータもこのブラウザ内にのみ保存されます（外部には送信されません）。</p>
+</footer>
+
+<script src="trash.js"></script>
+</body>
+</html>

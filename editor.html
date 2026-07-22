@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>コードを編集する — TOF-MS データ解析ツール</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <div>
+      <h1>コードを編集する（app.js）</h1>
+      <p class="sub">解析ツール本体（<code>app.js</code>）の内容をその場で表示・編集・プレビューできます。<a href="index.html">← 解析ツールに戻る</a></p>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="section-code">
+    <p class="hint">
+      下のエディタに <code>app.js</code> の内容を読み込んで表示します。自由に書き換えて「変更を反映して再実行」を押すと、
+      下のプレビュー欄に、編集後のコードでツール全体（<code>index.html</code>）を再読み込みして表示します
+      （このページ自体や、もとの <code>index.html</code>・<code>app.js</code> は変更されません）。
+      プレビューへの反映は一時的なもので、このページを閉じたり再読み込みすると消えます。編集内容をファイルとして残したい場合は
+      「編集内容をapp.jsとしてダウンロード」で保存し、手元の <code>app.js</code> を置き換えてください。
+      なお、このページを <code>file://</code>（ダブルクリックで直接開いた状態）で開いている場合、コードの読み込みに失敗することがあります。
+      その場合はローカルサーバー経由で開くか、公開ページをご利用ください。
+    </p>
+    <div class="code-editor-toolbar">
+      <button class="btn btn-primary" id="btnRunCode" type="button">変更を反映して再実行</button>
+      <button class="btn btn-ghost" id="btnResetCode" type="button">元のコードに戻す</button>
+      <button class="btn btn-ghost" id="btnDownloadCode" type="button">編集内容をapp.jsとしてダウンロード</button>
+      <span id="codeStatus" class="hint-inline"></span>
+    </div>
+    <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off"></textarea>
+    <div class="code-preview-wrap">
+      <div class="code-preview-header">プレビュー（「変更を反映して再実行」を押すとここに編集後のコードで表示されます）</div>
+      <iframe id="codePreviewFrame" class="code-preview-frame" sandbox="allow-scripts allow-same-origin allow-downloads allow-popups allow-modals"></iframe>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>TOF-MS Data Analysis Tool — コード編集ページ。ここでの変更はブラウザに保存されず、ダウンロードしない限り消えます。</p>
+</footer>
+
+<script src="editor.js"></script>
+</body>
+</html>
