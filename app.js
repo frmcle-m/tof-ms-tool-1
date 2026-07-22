@@ -812,13 +812,34 @@ if (typeof document !== 'undefined') {
     populateChecklists();
   }
 
-  function buildChecklist(containerId, stems, excludeStem) {
+  // 数値ラベルが付いているかどうか
+  function hasNumericLabel(stem) {
+    const e = state.files[stem];
+    return !!e && e.labelType === 'number' && Number.isFinite(e.labelValue);
+  }
+
+  // 重ね書きの並び順の比較関数。数値ラベルありのファイルはラベル値の昇順で先に並べ、
+  // ラベルなしのファイルはその後にファイル名（自然順）で並べる。
+  function compareForOverlay(a, b) {
+    const na = hasNumericLabel(a), nb = hasNumericLabel(b);
+    if (na && nb) return state.files[a].labelValue - state.files[b].labelValue;
+    if (na && !nb) return -1;
+    if (!na && nb) return 1;
+    return naturalCompare(a, b);
+  }
+
+  // 重ね書きグラフの各線に表示する名前。数値ラベルがあればラベル値、なければファイル名。
+  function overlayTraceName(stem) {
+    return hasNumericLabel(stem) ? String(state.files[stem].labelValue) : stem;
+  }
+
+  // includeNonNumeric=true の場合は数値ラベルなしのファイルもチェックリストに含める
+  // （複数ファイル重ね書き用。ラベルなしはファイル名で識別・並び替えする）。
+  function buildChecklist(containerId, stems, excludeStem, includeNonNumeric) {
     const container = document.getElementById(containerId);
     const selection = state.checklistSelection[containerId];
     container.innerHTML = '';
-    const sorted = [...stems].sort((a, b) => state.files[a].labelValue - state.files[b].labelValue);
-    // naturalCompareでファイル名順に並べたい場合は上の行を
-    // const sorted = [...stems].sort(naturalCompare); に置き換えてください（既定はラベル値の昇順）
+    const sorted = [...stems].sort(compareForOverlay);
     for (const stem of sorted) {
       if (stem === excludeStem) continue;
       const label = document.createElement('label');
@@ -828,16 +849,20 @@ if (typeof document !== 'undefined') {
       cb.checked = selection[stem] !== false; // stem単位で記憶した選択状態（既定はチェック済み）
       cb.addEventListener('change', () => { selection[stem] = cb.checked; schedulePersistMeta(); });
       label.appendChild(cb);
-      label.appendChild(document.createTextNode(`${stem} (${state.files[stem].labelValue})`));
+      const text = hasNumericLabel(stem) ? `${stem} (${state.files[stem].labelValue})` : `${stem} (ラベルなし)`;
+      label.appendChild(document.createTextNode(text));
       container.appendChild(label);
     }
   }
 
   function populateChecklists() {
-    const numericStems = Object.keys(state.files).filter(s =>
-      state.files[s].csvFile && state.files[s].labelType === 'number' && state.files[s].useInPlot !== false);
-    buildChecklist('multiFileChecks', numericStems, document.getElementById('multiBgSelect').value);
-    buildChecklist('intFileChecks', numericStems, document.getElementById('intBgSelect').value);
+    // 複数ファイル重ね書き: 数値ラベルの有無にかかわらず、プロットに使用する全csvファイルを対象にする
+    const plotStems = Object.keys(state.files).filter(s =>
+      state.files[s].csvFile && state.files[s].useInPlot !== false);
+    // 積算・比プロット: 横軸がラベル値そのものなので、数値ラベルのファイルのみ対象にする
+    const numericStems = plotStems.filter(s => hasNumericLabel(s));
+    buildChecklist('multiFileChecks', plotStems, document.getElementById('multiBgSelect').value, true);
+    buildChecklist('intFileChecks', numericStems, document.getElementById('intBgSelect').value, false);
   }
 
   /* ---------- 7. 表示設定・軸範囲・質量校正入力値の記憶（ページ更新をまたいで保持する） ---------- */
@@ -1501,7 +1526,7 @@ if (typeof document !== 'undefined') {
     const commonBg = await getBgSeries(commonBgStem);
     if (!commonBg) { alert('BGのcsvファイルが見つかりません'); return; }
 
-    const sorted = [...checked].sort((s1, s2) => state.files[s1].labelValue - state.files[s2].labelValue);
+    const sorted = [...checked].sort(compareForOverlay);
 
     const rawTraces = [];
     const diffTraces = [];
@@ -1529,7 +1554,7 @@ if (typeof document !== 'undefined') {
         const bgInterp = interpLinear(sigTime, bgData.bgTime, bgData.bgCounts);
         diffCounts = sigCounts.map((v, i) => v - bgInterp[i]);
       }
-      const labelText = String(entry.labelValue);
+      const labelText = overlayTraceName(stem);
 
       let xSig, xDiff, sMask, dMask;
       if (useMass) {
