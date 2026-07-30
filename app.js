@@ -268,11 +268,12 @@ if (typeof document !== 'undefined') {
      files: stem -> { name, csvFile, condFile, csvData, condData, label, labelType,
                        labelValue, dateKey, useInPlot, bgOverrideStem }
      knownDates:    これまでに一度でも読み込んだことのある日付キーの集合（サイドバーの日付一覧＝履歴）
-     selectedDates: サイドバーの日付一覧で選ばれ、「2. 各ファイルの一覧・ラベル」に表示されている日付キーの集合（複数可）
+     selectedDates: サイドバーの日付一覧で選ばれ、「2. 各ファイルの一覧・ラベル」および「3. グラフを描画する」の
+                    ファイル選択肢（プルダウン・チェックリスト）の対象となっている日付キーの集合（複数可）
      bgStem:        「共通BGとして使用」で指定された、共通のバックグラウンドファイル（ツール全体で1つ）
      checklistSelection: 複数ファイル重ね書き・積算タブのチェックリストの選択状態（stem -> true/false）
      fields:        表示設定・軸範囲・質量校正の入力値など（id -> 値）を記憶する
-     ※「3. グラフを描画する」は日付を問わず全ファイルが対象のため、これらの設定はすべてツール全体で1つだけ持つ。
+     ※「3. グラフを描画する」の各プルダウン・チェックリストは、サイドバーで選択中の日付のファイルのみを対象とする。
      ============================================================ */
   const state = {
     files: {},
@@ -484,9 +485,10 @@ if (typeof document !== 'undefined') {
   }
 
   /* ---------- 2b. ゴミ箱 ----------
-     「2. 各ファイルの一覧・ラベル」の各行のゴミ箱アイコンを押すと、そのファイルを読み込んだ
-     ファイルの一覧から取り除き、ゴミ箱（IndexedDBの trash ストア）に移す。ゴミ箱の中身の
-     閲覧・復元・完全削除は別ページ（trash.html）で行う。 */
+     「2. 各ファイルの一覧・ラベル」でチェックしたファイルを、読み込んだファイルの一覧から
+     取り除き、ゴミ箱（IndexedDBの trash ストア）に移す。ゴミ箱の中身の閲覧・復元・完全削除は
+     別ページ（trash.html）で行う。 */
+  const trashSelection = new Set(); // チェックボックスで選択中のstem（ページ内だけの一時的な状態）
 
   async function refreshSidebarTrashCount() {
     const trashRecords = await dbGetAll(STORE_TRASH);
@@ -506,6 +508,7 @@ if (typeof document !== 'undefined') {
       await dbPut(STORE_TRASH, record);
       await dbDeleteKey(STORE_FILES, stem);
       delete state.files[stem];
+      trashSelection.delete(stem);
 
       if (state.bgStem === stem) state.bgStem = null;
       delete state.checklistSelection.multiFileChecks[stem];
@@ -604,6 +607,7 @@ if (typeof document !== 'undefined') {
         schedulePersistMeta();
         renderSidebarDateList();
         renderFilesTable();
+        populateSelects(); // 「3. グラフを描画する」の各プルダウン・チェックリストも選択中の日付に合わせて更新する
       });
       listEl.appendChild(item);
     }
@@ -688,13 +692,15 @@ if (typeof document !== 'undefined') {
       const tr = document.createElement('tr');
 
       const tdTrash = document.createElement('td');
-      const trashBtn = document.createElement('button');
-      trashBtn.type = 'button';
-      trashBtn.className = 'trash-row-btn';
-      trashBtn.textContent = '🗑';
-      trashBtn.title = 'このファイルをゴミ箱へ移動';
-      trashBtn.addEventListener('click', () => moveStemsToTrash([stem]));
-      tdTrash.appendChild(trashBtn);
+      const trashCb = document.createElement('input');
+      trashCb.type = 'checkbox';
+      trashCb.checked = trashSelection.has(stem);
+      trashCb.addEventListener('change', () => {
+        if (trashCb.checked) trashSelection.add(stem); else trashSelection.delete(stem);
+        const selectAllCb = document.getElementById('trashSelectAll');
+        if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
+      });
+      tdTrash.appendChild(trashCb);
 
       const tdName = document.createElement('td');
       tdName.textContent = stem;
@@ -781,16 +787,20 @@ if (typeof document !== 'undefined') {
       tr.appendChild(tdBg); tr.appendChild(tdIndividualBg);
       tbody.appendChild(tr);
     }
+    const selectAllCb = document.getElementById('trashSelectAll');
+    if (selectAllCb) selectAllCb.checked = allStems.length > 0 && allStems.every(s => trashSelection.has(s));
     const useAllCb = document.getElementById('useInPlotSelectAll');
     if (useAllCb) useAllCb.checked = allStems.length > 0 && allStems.every(s => state.files[s].useInPlot !== false);
   }
 
   /* ---------- 6. 「3. グラフを描画する」向けのファイル選択・チェックリスト ----------
-     日付を問わず、読み込んだ全ファイルから選択できる（複数日付のファイルを1つの
-     グラフに重ね書きできるようにするため）。 */
+     サイドバーで選択中の日付のファイルのみが選択肢に出る（複数日付を同時に選んでいれば、
+     それらをまたいだファイルを1つのグラフに重ね書きすることも引き続き可能）。 */
 
   function populateSelects() {
-    const stems = Object.keys(state.files).filter(s => state.files[s].csvFile).sort(naturalCompare);
+    const stems = Object.keys(state.files)
+      .filter(s => state.files[s].csvFile && state.selectedDates.has(state.files[s].dateKey))
+      .sort(naturalCompare);
     const selects = ['rawFileSelect', 'massFileSelect', 'diffSignalSelect', 'diffBgSelect', 'multiBgSelect', 'intBgSelect'];
     for (const id of selects) {
       const sel = document.getElementById(id);
@@ -812,34 +822,13 @@ if (typeof document !== 'undefined') {
     populateChecklists();
   }
 
-  // 数値ラベルが付いているかどうか
-  function hasNumericLabel(stem) {
-    const e = state.files[stem];
-    return !!e && e.labelType === 'number' && Number.isFinite(e.labelValue);
-  }
-
-  // 重ね書きの並び順の比較関数。数値ラベルありのファイルはラベル値の昇順で先に並べ、
-  // ラベルなしのファイルはその後にファイル名（自然順）で並べる。
-  function compareForOverlay(a, b) {
-    const na = hasNumericLabel(a), nb = hasNumericLabel(b);
-    if (na && nb) return state.files[a].labelValue - state.files[b].labelValue;
-    if (na && !nb) return -1;
-    if (!na && nb) return 1;
-    return naturalCompare(a, b);
-  }
-
-  // 重ね書きグラフの各線に表示する名前。数値ラベルがあればラベル値、なければファイル名。
-  function overlayTraceName(stem) {
-    return hasNumericLabel(stem) ? String(state.files[stem].labelValue) : stem;
-  }
-
-  // includeNonNumeric=true の場合は数値ラベルなしのファイルもチェックリストに含める
-  // （複数ファイル重ね書き用。ラベルなしはファイル名で識別・並び替えする）。
-  function buildChecklist(containerId, stems, excludeStem, includeNonNumeric) {
+  function buildChecklist(containerId, stems, excludeStem) {
     const container = document.getElementById(containerId);
     const selection = state.checklistSelection[containerId];
     container.innerHTML = '';
-    const sorted = [...stems].sort(compareForOverlay);
+    const sorted = [...stems].sort((a, b) => state.files[a].labelValue - state.files[b].labelValue);
+    // naturalCompareでファイル名順に並べたい場合は上の行を
+    // const sorted = [...stems].sort(naturalCompare); に置き換えてください（既定はラベル値の昇順）
     for (const stem of sorted) {
       if (stem === excludeStem) continue;
       const label = document.createElement('label');
@@ -849,20 +838,17 @@ if (typeof document !== 'undefined') {
       cb.checked = selection[stem] !== false; // stem単位で記憶した選択状態（既定はチェック済み）
       cb.addEventListener('change', () => { selection[stem] = cb.checked; schedulePersistMeta(); });
       label.appendChild(cb);
-      const text = hasNumericLabel(stem) ? `${stem} (${state.files[stem].labelValue})` : `${stem} (ラベルなし)`;
-      label.appendChild(document.createTextNode(text));
+      label.appendChild(document.createTextNode(`${stem} (${state.files[stem].labelValue})`));
       container.appendChild(label);
     }
   }
 
   function populateChecklists() {
-    // 複数ファイル重ね書き: 数値ラベルの有無にかかわらず、プロットに使用する全csvファイルを対象にする
-    const plotStems = Object.keys(state.files).filter(s =>
-      state.files[s].csvFile && state.files[s].useInPlot !== false);
-    // 積算・比プロット: 横軸がラベル値そのものなので、数値ラベルのファイルのみ対象にする
-    const numericStems = plotStems.filter(s => hasNumericLabel(s));
-    buildChecklist('multiFileChecks', plotStems, document.getElementById('multiBgSelect').value, true);
-    buildChecklist('intFileChecks', numericStems, document.getElementById('intBgSelect').value, false);
+    const numericStems = Object.keys(state.files).filter(s =>
+      state.files[s].csvFile && state.files[s].labelType === 'number' && state.files[s].useInPlot !== false &&
+      state.selectedDates.has(state.files[s].dateKey));
+    buildChecklist('multiFileChecks', numericStems, document.getElementById('multiBgSelect').value);
+    buildChecklist('intFileChecks', numericStems, document.getElementById('intBgSelect').value);
   }
 
   /* ---------- 7. 表示設定・軸範囲・質量校正入力値の記憶（ページ更新をまたいで保持する） ---------- */
@@ -1133,6 +1119,7 @@ if (typeof document !== 'undefined') {
     state.selectedDates = new Set();
     state.bgStem = null;
     state.checklistSelection = { multiFileChecks: {}, intFileChecks: {} };
+    trashSelection.clear();
     dbClear(); // ブラウザに保存していたデータ（ゴミ箱を含む）も合わせて削除する
     document.getElementById('diffCalibA').value = '';
     document.getElementById('diffCalibB').value = '';
@@ -1151,13 +1138,20 @@ if (typeof document !== 'undefined') {
     refreshSidebarTrashCount();
   });
 
+  document.getElementById('btnMoveToTrash').addEventListener('click', () => {
+    moveStemsToTrash([...trashSelection]);
+  });
+  document.getElementById('trashSelectAll').addEventListener('change', (e) => {
+    const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) td:first-child input[type="checkbox"]');
+    rowCbs.forEach(cb => {
+      cb.checked = e.target.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+  });
   document.getElementById('useInPlotSelectAll').addEventListener('change', (e) => {
-    // ループ中に各行のchangeハンドラがこのヘッダーのcheckedを書き換えてしまうため、
-    // 先に「全チェック/全解除」の値を確定させてから各行に反映する（先頭行だけ反映される不具合の対策）。
-    const checkAll = e.target.checked;
     const rowCbs = document.querySelectorAll('#filesTableBody tr:not(.date-group-row) .use-in-plot-cb');
     rowCbs.forEach(cb => {
-      cb.checked = checkAll;
+      cb.checked = e.target.checked;
       cb.dispatchEvent(new Event('change'));
     });
   });
@@ -1526,7 +1520,7 @@ if (typeof document !== 'undefined') {
     const commonBg = await getBgSeries(commonBgStem);
     if (!commonBg) { alert('BGのcsvファイルが見つかりません'); return; }
 
-    const sorted = [...checked].sort(compareForOverlay);
+    const sorted = [...checked].sort((s1, s2) => state.files[s1].labelValue - state.files[s2].labelValue);
 
     const rawTraces = [];
     const diffTraces = [];
@@ -1554,7 +1548,7 @@ if (typeof document !== 'undefined') {
         const bgInterp = interpLinear(sigTime, bgData.bgTime, bgData.bgCounts);
         diffCounts = sigCounts.map((v, i) => v - bgInterp[i]);
       }
-      const labelText = overlayTraceName(stem);
+      const labelText = String(entry.labelValue);
 
       let xSig, xDiff, sMask, dMask;
       if (useMass) {
